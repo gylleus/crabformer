@@ -8,6 +8,7 @@ use clap::Parser;
 use ndarray::{Array1, Array2};
 
 use crate::{
+    data::decode_bytes,
     layers::{Layer, embedding::EmbeddingLayer, multi_head_attention::MultiHeadAttentionLayer},
     params::{BATCH_SIZE, EMBED_DIMENSION, SEQUENCE_LENGTH},
 };
@@ -33,9 +34,21 @@ fn main() {
     let model = model::CrabformerModel::new(vocab_size, seed).expect("Failed to create model");
 
     let batch = data.next_batch().expect("no data").expect("batch is None");
-    let res = model.forward_batch(&batch);
+    // let res = model.forward_batch(&batch);
+    let next_tokens = model.next_token_batch(&batch);
 
-    println!("Model output: {:?}", res);
+    println!("Model output: {:?}", next_tokens);
+
+    for i in 0..next_tokens.len() {
+        let predicted = decode_bytes(&vec![next_tokens[i]]);
+        let input = decode_bytes(&batch.x.row(i).to_vec());
+
+        let last_index = batch.y.dim().1 - 1;
+        let actual = decode_bytes(&vec![batch.y.get((i, last_index)).cloned().unwrap()]);
+
+        println!("Input sequence: {:?}", input);
+        println!("Predicted: {}, Actual: {}", predicted, actual);
+    }
 
     // let embed_dim = 10;
 

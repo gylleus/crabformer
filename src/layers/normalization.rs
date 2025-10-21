@@ -2,22 +2,23 @@ use ndarray::{Array, Array1, Array3, Axis, RemoveAxis};
 
 use crate::layers::Layer;
 
-pub trait SoftMax {
-    fn softmax(&mut self, axis: usize);
+pub trait Softmax {
+    fn softmax(&mut self, axis: usize, temperature: Option<f32>);
 }
 
-impl<D> SoftMax for Array<f32, D>
+impl<D> Softmax for Array<f32, D>
 where
     D: ndarray::Dimension + RemoveAxis,
 {
-    fn softmax(&mut self, dim: usize) {
+    fn softmax(&mut self, dim: usize, temperature: Option<f32>) {
+        let temp = temperature.unwrap_or(1.0);
         for mut axis in self.axis_iter_mut(ndarray::Axis(dim)) {
             let local_max = axis.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
 
             // Subtract by local max for numerical stability
-            let sum_exp: f32 = axis.iter().map(|&v| (v - local_max).exp()).sum();
+            let sum_exp: f32 = axis.iter().map(|&v| ((v - local_max) / temp).exp()).sum();
             for v in axis.iter_mut() {
-                *v = (*v - local_max).exp() / sum_exp;
+                *v = ((*v - local_max) / temp).exp() / sum_exp;
             }
         }
     }

@@ -9,7 +9,7 @@ use rand::{SeedableRng, rngs::StdRng};
 use crate::{
     errors::ModelError,
     layers::{
-        Layer, dropout::Dropout, linear::LinearLayer, normalization::SoftMax,
+        Layer, dropout::Dropout, linear::LinearLayer, normalization::Softmax,
         xavier_initialized_array,
     },
     params::{MutableRng, get_rng},
@@ -226,7 +226,7 @@ impl Layer for MultiHeadAttentionLayer {
                 let mut attention_weights = attention_scores.mapv(|x| x / dk.sqrt());
 
                 // Normalize weights with softmax
-                attention_weights.softmax(0);
+                attention_weights.softmax(0, None);
 
                 // Apply dropout to attention weights (training only)
                 attention_weights.apply_dropout(self.dropout_rate, &mut rng);

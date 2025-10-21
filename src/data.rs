@@ -219,3 +219,8 @@ impl Iterator for TokenStream {
         }
     }
 }
+
+pub fn decode_bytes(tokens: &[u32]) -> String {
+    let bytes: Vec<u8> = tokens.iter().map(|&t| t as u8).collect();
+    String::from_utf8_lossy(&bytes).to_string()
+}
