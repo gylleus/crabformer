@@ -1,13 +1,14 @@
 mod data;
 mod errors;
 mod layers;
+mod model;
 mod params;
 
 use clap::Parser;
 use ndarray::{Array1, Array2};
 
 use crate::{
-    layers::{embedding::EmbeddingLayer, self_attention::SelfAttentionLayer},
+    layers::{Layer, embedding::EmbeddingLayer, multi_head_attention::MultiHeadAttentionLayer},
     params::{BATCH_SIZE, EMBED_DIMENSION, SEQUENCE_LENGTH},
 };
 
@@ -27,36 +28,34 @@ fn main() {
 
     // let vocab_size = data.vocab_size();
     let vocab_size = data.vocab_size();
-    // let embed_dim = 10;
-    let seed = None;
 
-    let token_embedding_layer = EmbeddingLayer::new(vocab_size, EMBED_DIMENSION, None);
-    let position_embedding_layer = EmbeddingLayer::new(SEQUENCE_LENGTH, EMBED_DIMENSION, seed);
+    let seed = None;
+    let model = model::CrabformerModel::new(vocab_size, seed).expect("Failed to create model");
 
     let batch = data.next_batch().expect("no data").expect("batch is None");
-    let positions = Array2::from_shape_fn((BATCH_SIZE, SEQUENCE_LENGTH), |(_, j)| {
-        j as u32 // Each position in the sequence gets its index
-    });
+    let res = model.forward_batch(&batch);
 
-    let mut token_embedding_output = token_embedding_layer.forward(&batch.x);
-    let position_embedding_output = position_embedding_layer.forward(&positions);
-    println!("amogus");
-    println!(
-        "Token embedding output shape: {:?}",
-        token_embedding_output.dim()
-    );
-    println!(
-        "Position embedding output shape: {:?}",
-        position_embedding_output.dim()
-    );
+    println!("Model output: {:?}", res);
 
-    token_embedding_output += &position_embedding_output;
+    // let embed_dim = 10;
 
-    let attention_layer = SelfAttentionLayer::new(EMBED_DIMENSION, seed).with_casual_mask();
+    // let token_embedding_layer = EmbeddingLayer::new(vocab_size, EMBED_DIMENSION, None);
+    // let position_embedding_layer = EmbeddingLayer::new(SEQUENCE_LENGTH, EMBED_DIMENSION, seed);
 
-    let rng = &mut params::get_rng(None);
+    // let positions = Array2::from_shape_fn((BATCH_SIZE, SEQUENCE_LENGTH), |(_, j)| {
+    //     j as u32 // Each position in the sequence gets its index
+    // });
 
-    let attention_output = attention_layer.forward(&token_embedding_output, rng);
-    println!("Attention output shape: {:?}", attention_output.dim());
+    // let mut token_embedding_output = token_embedding_layer.forward(&batch.x);
+    // let position_embedding_output = position_embedding_layer.forward(&positions);
+
+    // token_embedding_output += &position_embedding_output;
+
+    // let attention_layer = MultiHeadAttentionLayer::new(EMBED_DIMENSION, EMBED_DIMENSION, 2, seed)
+    //     .and_then(|l| Ok(l.with_casual_mask().with_qkv_bias()))
+    //     .unwrap();
+
+    // let attention_output = attention_layer.forward(&token_embedding_output);
+    // println!("Attention output: {:?}", attention_output);
     // println!("Batch data: {:?}", batch.x);
 }

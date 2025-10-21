@@ -7,3 +7,9 @@ pub enum DataError {
     #[error("File error: {0}")]
     FileError(String),
 }
+
+#[derive(Debug, Error)]
+pub enum ModelError {
+    #[error("Dimension mismatch: {0}")]
+    DimensionMismatch(String),
+}
