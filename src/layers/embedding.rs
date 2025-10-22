@@ -16,11 +16,6 @@ impl EmbeddingLayer {
 
         let gradients = Array2::<f32>::zeros((vocab_size, embed_dim));
 
-        println!(
-            "Initialized EmbeddingLayer with vocab_size={} and embed_dim={}",
-            vocab_size, embed_dim
-        );
-
         Self { weights, gradients }
     }
 

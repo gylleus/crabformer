@@ -42,10 +42,6 @@ impl DataLoader {
         })
     }
 
-    pub fn vocab_size(&self) -> usize {
-        256 // byte-level tokens
-    }
-
     /// Produce the next batch. `Ok(None)` means the underlying stream hit EOF.
     pub fn next_batch(&mut self) -> Result<Option<Batch>, DataError> {
         self.shuffler.next_batch(self.batch_size)
@@ -218,9 +214,4 @@ impl Iterator for TokenStream {
             return Some(Ok(next as u32));
         }
     }
-}
-
-pub fn decode_bytes(tokens: &[u32]) -> String {
-    let bytes: Vec<u8> = tokens.iter().map(|&t| t as u8).collect();
-    String::from_utf8_lossy(&bytes).to_string()
 }

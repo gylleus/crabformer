@@ -3,14 +3,18 @@ mod errors;
 mod layers;
 mod model;
 mod params;
+mod tokenizer;
 
 use clap::Parser;
-use ndarray::{Array1, Array2};
+use ndarray::{Array1, Array2, Array3, Axis};
 
 use crate::{
-    data::decode_bytes,
-    layers::{Layer, embedding::EmbeddingLayer, multi_head_attention::MultiHeadAttentionLayer},
+    layers::{
+        Layer, embedding::EmbeddingLayer, multi_head_attention::MultiHeadAttentionLayer,
+        normalization::Softmax,
+    },
     params::{BATCH_SIZE, EMBED_DIMENSION, SEQUENCE_LENGTH},
+    tokenizer::ByteTokenizer,
 };
 
 #[derive(Parser)]
@@ -27,28 +31,37 @@ fn main() {
     let mut data =
         data::DataLoader::new(args.data_file, BATCH_SIZE, None).expect("Failed to load data");
 
-    // let vocab_size = data.vocab_size();
-    let vocab_size = data.vocab_size();
+    let tokenizer = ByteTokenizer;
+    let vocab_size = tokenizer.vocab_size();
 
     let seed = None;
     let model = model::CrabformerModel::new(vocab_size, seed).expect("Failed to create model");
 
     let batch = data.next_batch().expect("no data").expect("batch is None");
     // let res = model.forward_batch(&batch);
-    let next_tokens = model.next_token_batch(&batch);
+    // let next_tokens = model.next_token_batch(&batch);
 
-    println!("Model output: {:?}", next_tokens);
+    // println!("Model output: {:?}", next_tokens);
 
-    for i in 0..next_tokens.len() {
-        let predicted = decode_bytes(&vec![next_tokens[i]]);
-        let input = decode_bytes(&batch.x.row(i).to_vec());
+    let mut output = model.forward_batch(&batch);
 
-        let last_index = batch.y.dim().1 - 1;
-        let actual = decode_bytes(&vec![batch.y.get((i, last_index)).cloned().unwrap()]);
+    output.softmax(2, None);
 
-        println!("Input sequence: {:?}", input);
-        println!("Predicted: {}, Actual: {}", predicted, actual);
-    }
+    let loss = batch_loss(&output, &batch.y);
+    println!("Loss: {}", loss);
+
+    // println!("Model output: {:?}", output);
+
+    // for i in 0..next_tokens.len() {
+    //     let predicted = tokenizer.decode(&vec![next_tokens[i]]);
+    //     let input = tokenizer.decode(&batch.x.row(i).to_vec());
+
+    //     let last_index = batch.y.dim().1 - 1;
+    //     let actual = tokenizer.decode(&vec![batch.y.get((i, last_index)).cloned().unwrap()]);
+
+    //     println!("Input sequence: {:?}", input);
+    //     println!("Predicted: {}, Actual: {}", predicted, actual);
+    // }
 
     // let embed_dim = 10;
 
@@ -71,4 +84,36 @@ fn main() {
     // let attention_output = attention_layer.forward(&token_embedding_output);
     // println!("Attention output: {:?}", attention_output);
     // println!("Batch data: {:?}", batch.x);
+}
+
+/// Computes the cross-entropy loss between predictions and targets.
+/// Note that the targets is a 2D array containing the real next token after each
+/// token in our sequences.
+fn batch_loss(predictions: &Array3<f32>, targets: &Array2<u32>) -> f32 {
+    let mut total_loss = 0.0;
+    let batch_size = predictions.dim().0;
+
+    // Iterate over each target vector in the batch
+    for (batch_i, target_row) in targets.axis_iter(Axis(0)).enumerate() {
+        // Get the corresponding prediction row from same batch
+        let pred_row = predictions.index_axis(Axis(0), batch_i);
+
+        // Iterate over each token in the sequence
+        for (j, &target_token) in target_row.iter().enumerate() {
+            // Get the predicted probabilities for the j-th token
+            let predicted_probs = pred_row.index_axis(Axis(0), j);
+
+            // Fetch the predicted probability using the target token index
+            let predicted_prob = predicted_probs[target_token as usize];
+            println!(
+                "  Token {}: target={}, predicted_prob={}",
+                j, target_token, predicted_prob
+            );
+            // Accumulate the negative log likelihood
+            total_loss += -predicted_prob.ln();
+        }
+    }
+
+    // Return the average loss over the batch
+    total_loss / batch_size as f32
 }
