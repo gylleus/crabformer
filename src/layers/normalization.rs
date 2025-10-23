@@ -34,8 +34,8 @@ pub struct LayerNormLayer {
     pub scale: Array1<f32>,
     pub shift: Array1<f32>,
     // Gradients for learnable parameters
-    pub scale_grad: Option<Array1<f32>>,
-    pub shift_grad: Option<Array1<f32>>,
+    scale_grad: LayerCacheParam<Array1<f32>>,
+    shift_grad: LayerCacheParam<Array1<f32>>,
     // Cache for backward pass
     last_input: LayerCacheParam<Array3<f32>>,
     last_normalized: LayerCacheParam<Array3<f32>>,
@@ -49,12 +49,27 @@ impl LayerNormLayer {
         Self {
             scale: Array::ones(dim),
             shift: Array::zeros(dim),
-            scale_grad: None,
-            shift_grad: None,
+            scale_grad: LayerCacheParam::new("LayerNormLayer::scale_grad"),
+            shift_grad: LayerCacheParam::new("LayerNormLayer::shift_grad"),
             last_input: LayerCacheParam::new("LayerNormLayer::last_input"),
             last_normalized: LayerCacheParam::new("LayerNormLayer::last_normalized"),
             training: false,
         }
+    }
+
+    pub fn get_params(&mut self) -> Vec<crate::adamw::ParamHandle> {
+        vec![
+            crate::adamw::ParamHandle::Array1 {
+                key: self.scale_grad.id(),
+                data: &mut self.scale,
+                grad: &self.scale_grad,
+            },
+            crate::adamw::ParamHandle::Array1 {
+                key: self.shift_grad.id(),
+                data: &mut self.shift,
+                grad: &self.shift_grad,
+            },
+        ]
     }
 }
 
@@ -94,16 +109,24 @@ impl Layer for LayerNormLayer {
         let (batch_size, seq_len, dim) = input.dim();
 
         // Lazy init gradients
-        if self.scale_grad.is_none() {
-            self.scale_grad = Some(Array1::zeros(dim));
+        {
+            let mut guard = self.scale_grad.mut_ref();
+            if guard.is_none() {
+                *guard = Some(Array1::zeros(dim));
+            }
         }
-        if self.shift_grad.is_none() {
-            self.shift_grad = Some(Array1::zeros(dim));
+        {
+            let mut guard = self.shift_grad.mut_ref();
+            if guard.is_none() {
+                *guard = Some(Array1::zeros(dim));
+            }
         }
 
         // Gradient w.r.t. scale: sum over batch and sequence dimensions
         // d_scale = sum(grad_output * normalized)
-        if let Some(ref mut sg) = self.scale_grad {
+        {
+            let mut guard = self.scale_grad.mut_ref();
+            let sg = guard.as_mut().unwrap();
             for b in 0..batch_size {
                 for s in 0..seq_len {
                     for d in 0..dim {
@@ -115,7 +138,9 @@ impl Layer for LayerNormLayer {
 
         // Gradient w.r.t. shift: sum over batch and sequence dimensions
         // d_shift = sum(grad_output)
-        if let Some(ref mut shift_g) = self.shift_grad {
+        {
+            let mut guard = self.shift_grad.mut_ref();
+            let shift_g = guard.as_mut().unwrap();
             for b in 0..batch_size {
                 for s in 0..seq_len {
                     for d in 0..dim {
@@ -181,18 +206,13 @@ impl Layer for LayerNormLayer {
     }
 }
 
-impl LayerNormLayer {
-    /// Zero out accumulated gradients
-    pub fn zero_grad(&mut self) {
-        if let Some(ref mut sg) = self.scale_grad {
+impl ZeroGrad for LayerNormLayer {
+    fn zero_grad(&mut self) {
+        if let Some(sg) = self.scale_grad.mut_ref().as_mut() {
             sg.fill(0.0);
         }
-        if let Some(ref mut shift_g) = self.shift_grad {
+        if let Some(shift_g) = self.shift_grad.mut_ref().as_mut() {
             shift_g.fill(0.0);
         }
     }
-}
-
-impl ZeroGrad for LayerNormLayer {
-    fn zero_grad(&mut self) {}
 }

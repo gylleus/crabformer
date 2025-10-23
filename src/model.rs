@@ -2,7 +2,7 @@ use ndarray::{Array2, Array3, s};
 use rand::distr::{Distribution, weighted::WeightedIndex};
 
 use crate::{
-    adamw::ParamHandle,
+    adamw::{self, AdamWOptimizer, ParamHandle},
     data::{Batch, DataLoader},
     errors::ModelError,
     layers::{
@@ -10,8 +10,9 @@ use crate::{
         linear::LinearLayer, normalization::Softmax, transformer_block::TransformerBlock,
     },
     params::{
-        ATTENTION_HEADS, BATCH_SIZE, DROPOUT_RATE, EMBED_DIMENSION, FF_HIDDEN_DIMENSION,
-        MutableRng, SEQUENCE_LENGTH, TEMPERATURE, TRANSFORMER_BLOCKS, get_rng,
+        ADAMW_BETA1, ADAMW_BETA2, ADAMW_EPSILON, ATTENTION_HEADS, BATCH_SIZE, DROPOUT_RATE,
+        EMBED_DIMENSION, FF_HIDDEN_DIMENSION, LEARNING_RATE, MutableRng, SEQUENCE_LENGTH,
+        TEMPERATURE, TRANSFORMER_BLOCKS, WEIGHT_DECAY, get_rng,
     },
 };
 
@@ -28,6 +29,7 @@ pub struct CrabformerModel {
     // Cache for backward pass
     last_embeddings: LayerCacheParam<Array3<f32>>,
     last_positions: LayerCacheParam<Array2<u32>>,
+    adamw_optimizer: Option<AdamWOptimizer>,
 }
 
 impl CrabformerModel {
@@ -60,6 +62,13 @@ impl CrabformerModel {
             seed,
             rng: MutableRng::new(seed),
             training: false,
+            adamw_optimizer: Some(AdamWOptimizer::new(
+                LEARNING_RATE,
+                WEIGHT_DECAY,
+                ADAMW_BETA1,
+                ADAMW_BETA2,
+                ADAMW_EPSILON,
+            )),
             last_embeddings: LayerCacheParam::new("CrabformerModel::last_embeddings"),
             last_positions: LayerCacheParam::new("CrabformerModel::last_positions"),
         })
@@ -253,8 +262,15 @@ impl CrabformerModel {
 
                 // Update weights (placeholder - need to integrate optimizer)
                 // For now, we'll just do a simple gradient descent step
+
+                let Some(optimizer) = &mut self.adamw_optimizer else {
+                    return Err(ModelError::OptimizerError(
+                        "AdamW optimizer not initialized".to_string(),
+                    ));
+                };
+
                 // TODO: Integrate AdamW optimizer
-                let params: Vec<ParamHandle> = self
+                let mut params: Vec<ParamHandle> = self
                     .token_embedding_layer
                     .get_params()
                     .into_iter()
@@ -262,6 +278,8 @@ impl CrabformerModel {
                     .chain(self.output_layer.get_params())
                     .chain(self.layers.iter_mut().flat_map(|layer| layer.get_params()))
                     .collect();
+
+                optimizer.step(&mut params);
 
                 if num_batches % 10 == 0 {
                     println!("Epoch {}, Batch {}, Loss: {:.4}", epoch, num_batches, loss);

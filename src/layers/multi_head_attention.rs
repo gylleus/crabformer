@@ -368,6 +368,17 @@ impl Layer for MultiHeadAttentionLayer {
         *self.last_queries.mut_ref() = None;
         *self.last_input.mut_ref() = None;
     }
+
+    fn get_params(&mut self) -> Vec<crate::layers::ParamHandle> {
+        let mut params = Vec::new();
+
+        // Collect parameters from Q, K, V projection layers
+        params.extend(self.query_weights.get_params());
+        params.extend(self.key_weights.get_params());
+        params.extend(self.value_weights.get_params());
+
+        params
+    }
 }
 
 impl ZeroGrad for MultiHeadAttentionLayer {

@@ -16,4 +16,6 @@ pub enum ModelError {
     EmptyCache { name: &'static str },
     #[error("Data error: {0}")]
     DataError(#[from] DataError),
+    #[error("Optimizer error: {0}")]
+    OptimizerError(String),
 }

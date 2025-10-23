@@ -1,6 +1,7 @@
 use ndarray::{Array1, Array2, Array3, ArrayBase, Data, Ix2};
 
 use crate::{
+    adamw,
     errors::ModelError,
     layers::{
         Layer, LayerCacheParam, ZeroGrad,
@@ -128,6 +129,25 @@ impl Layer for LinearLayer {
     fn set_eval(&mut self) {
         self.training = false;
     }
+
+    fn get_params(&mut self) -> Vec<adamw::ParamHandle> {
+        let mut params = vec![adamw::ParamHandle::Array2 {
+            key: self.weight_grad.id(),
+            data: &mut self.weights,
+            grad: &self.weight_grad,
+        }];
+
+        // Add bias parameter if it exists
+        if let Some(ref mut bias) = self.bias {
+            params.push(adamw::ParamHandle::Array1 {
+                key: self.bias_grad.id(),
+                data: bias,
+                grad: &self.bias_grad,
+            });
+        }
+
+        params
+    }
 }
 
 impl ZeroGrad for LinearLayer {
@@ -208,6 +228,16 @@ impl Layer for FeedForwardLayer {
         self.training = false;
         self.linear1.set_eval();
         self.linear2.set_eval();
+    }
+
+    fn get_params(&mut self) -> Vec<adamw::ParamHandle> {
+        let mut params = Vec::new();
+
+        // Collect parameters from both linear layers
+        params.extend(self.linear1.get_params());
+        params.extend(self.linear2.get_params());
+
+        params
     }
 }
 

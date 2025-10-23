@@ -164,6 +164,17 @@ impl Layer for TransformerBlock {
         // Set sublayers to eval mode
         self.self_attention.set_eval();
     }
+
+    fn get_params(&mut self) -> Vec<crate::layers::ParamHandle> {
+        let mut params = Vec::new();
+
+        // Collect parameters from all sub-layers
+        params.extend(self.layer_norm.get_params());
+        params.extend(self.self_attention.get_params());
+        params.extend(self.feed_forward.get_params());
+
+        params
+    }
 }
 
 impl ZeroGrad for TransformerBlock {

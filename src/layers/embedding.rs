@@ -9,8 +9,9 @@ use ndarray::{Array2, Array3};
 
 pub struct EmbeddingLayer {
     pub weights: Array2<f32>,
-    pub gradients: Array2<f32>,
+    // pub gradients: Array2<f32>,
     // Cache input tokens for backward pass
+    weight_grad: LayerCacheParam<Array2<f32>>,
     last_input_tokens: LayerCacheParam<Array2<u32>>,
     training: bool,
 }
@@ -21,11 +22,9 @@ impl EmbeddingLayer {
 
         let weights = xavier_initialized_array(vocab_size, embed_dim, &mut rng);
 
-        let gradients = Array2::<f32>::zeros((vocab_size, embed_dim));
-
         Self {
             weights,
-            gradients,
+            weight_grad: LayerCacheParam::new("EmbeddingLayer::weight_grad"),
             last_input_tokens: LayerCacheParam::new("EmbeddingLayer::last_input_tokens"),
             training: false,
         }
@@ -78,17 +77,24 @@ impl Layer for EmbeddingLayer {
 
         let (batch_size, seq_length, _embed_dim) = grad_output.dim();
 
+        let mut weight_grad_mut = self.weight_grad.mut_ref();
+
+        if weight_grad_mut.is_none() {
+            *weight_grad_mut = Some(Array2::zeros(self.weights.dim()));
+        }
+
         // Scatter gradients to the embedding table
         // For each token, accumulate the gradient to its corresponding embedding row
+        let weight_grad = weight_grad_mut.as_mut().unwrap();
+
         for batch_idx in 0..batch_size {
             for seq_idx in 0..seq_length {
                 let token = input_tokens[[batch_idx, seq_idx]] as usize;
                 let grad_slice = grad_output.slice(s![batch_idx, seq_idx, ..]);
 
-                // Accumulate gradient for this token's embedding
-                for (i, &grad_val) in grad_slice.iter().enumerate() {
-                    self.gradients[[token, i]] += grad_val;
-                }
+                // Accumulate gradient for this token's embedding using vectorized operation
+                let mut row = weight_grad.row_mut(token);
+                row += &grad_slice;
             }
         }
         Ok(input_tokens.clone())
@@ -102,10 +108,20 @@ impl Layer for EmbeddingLayer {
         self.training = false;
         self.last_input_tokens.clear();
     }
+
+    fn get_params(&mut self) -> Vec<crate::adamw::ParamHandle> {
+        vec![crate::adamw::ParamHandle::Array2 {
+            key: self.weight_grad.id(),
+            data: &mut self.weights,
+            grad: &self.weight_grad,
+        }]
+    }
 }
 
 impl ZeroGrad for EmbeddingLayer {
     fn zero_grad(&mut self) {
-        self.gradients.fill(0.0);
+        if let Some(wg) = self.weight_grad.mut_ref().as_mut() {
+            wg.fill(0.0);
+        }
     }
 }
