@@ -1,7 +1,6 @@
 use crate::{
     errors::ModelError,
     layers::{Layer, LayerCacheParam, ZeroGrad, xavier_initialized_array},
-    params::get_rng,
 };
 use ndarray::{Axis, s};
 
@@ -14,29 +13,24 @@ pub struct EmbeddingLayer {
     weight_grad: LayerCacheParam<Array2<f32>>,
     last_input_tokens: LayerCacheParam<Array2<u32>>,
     training: bool,
+
+    name: String,
 }
 
 impl EmbeddingLayer {
-    pub fn new(vocab_size: usize, embed_dim: usize, seed: Option<u64>) -> Self {
-        let mut rng = get_rng(seed);
+    pub fn new(vocab_size: usize, embed_dim: usize, name: Option<String>) -> Self {
+        let name = name.unwrap_or("EmbeddingLayer".into());
 
-        let weights = xavier_initialized_array(vocab_size, embed_dim, &mut rng);
+        let weights = xavier_initialized_array(vocab_size, embed_dim);
 
         Self {
             weights,
-            weight_grad: LayerCacheParam::new("EmbeddingLayer::weight_grad"),
-            last_input_tokens: LayerCacheParam::new("EmbeddingLayer::last_input_tokens"),
+            weight_grad: LayerCacheParam::new(format!("{}::weight_grad", name)),
+            last_input_tokens: LayerCacheParam::new(format!("{}::last_input_tokens", name)),
             training: false,
+            name,
         }
     }
-
-    /// Forward pass producing a 3D tensor of shape [batch_size, seq_length, embed_dim]
-    // pub fn forward(&self, input_tokens: &Array2<u32>) -> Array3<f32> {
-    //     let (batch_size, seq_length) = input_tokens.dim();
-    //     let mut output = Array3::<f32>::zeros((batch_size, seq_length, self.weights.ncols()));
-    //     self.forward_fill(input_tokens, &mut output);
-    //     output
-    // }
 
     /// Fills a preallocated output array with the embeddings for the input tokens.
     pub fn forward_fill(&self, input_tokens: &Array2<u32>, output: &mut Array3<f32>) {
@@ -59,7 +53,10 @@ impl Layer for EmbeddingLayer {
     type Input = Array2<u32>;
     type Output = Array3<f32>;
 
-    // pub fn forward(&self, input_tokens: &Array2<u32>) -> Array3<f32> {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
     fn forward(&self, input_tokens: &Self::Input) -> Self::Output {
         let (batch_size, seq_length) = input_tokens.dim();
         let mut output = Array3::<f32>::zeros((batch_size, seq_length, self.weights.ncols()));

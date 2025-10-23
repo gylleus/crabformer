@@ -24,10 +24,6 @@ impl AdamState {
     }
 }
 
-pub trait Param {
-    fn get_handle(&mut self) -> ParamHandle;
-}
-
 pub enum ParamHandle<'a> {
     Array1 {
         key: ParamKey,
@@ -91,17 +87,6 @@ impl AdamWOptimizer {
         }
     }
 
-    // /// Creates an AdamW optimizer with default hyperparameters commonly used for transformers.
-    // pub fn default() -> Self {
-    //     Self::new(
-    //         0.0001, // learning_rate
-    //         0.9,    // beta1
-    //         0.999,  // beta2
-    //         1e-8,   // epsilon
-    //         0.01,   // weight_decay
-    //     )
-    // }
-
     /// Performs a single optimization step.
     /// Updates all registered parameters based on their accumulated gradients.
     pub fn step(&mut self, params: &mut [ParamHandle]) {
@@ -156,8 +141,7 @@ impl AdamWOptimizer {
         param_state.m = &param_state.m * self.beta1 + &grad_dyn * (1.0 - self.beta1);
 
         // Update biased second moment estimate: v_t = beta2 * v_{t-1} + (1 - beta2) * g_t^2
-        param_state.v =
-            &param_state.v * self.beta2 + &(&grad_dyn * &grad_dyn) * (1.0 - self.beta2);
+        param_state.v = &param_state.v * self.beta2 + &(&grad_dyn * &grad_dyn) * (1.0 - self.beta2);
 
         // Compute bias-corrected first moment: m_hat = m_t / (1 - beta1^t)
         let m_hat = &param_state.m / bias_correction1;
@@ -178,7 +162,8 @@ impl AdamWOptimizer {
         let weight_decay_term = &data_dyn * self.weight_decay;
 
         // Compute the update
-        let update = &data_dyn - &adaptive_lr * self.learning_rate - &weight_decay_term * self.learning_rate;
+        let update =
+            &data_dyn - &adaptive_lr * self.learning_rate - &weight_decay_term * self.learning_rate;
 
         // Convert back to original dimensionality and assign
         data.assign(&update.into_dimensionality::<D>().unwrap());

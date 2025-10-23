@@ -13,7 +13,7 @@ pub enum ModelError {
     #[error("Dimension mismatch: {0}")]
     DimensionMismatch(String),
     #[error("{name}: layer parameter cache is empty")]
-    EmptyCache { name: &'static str },
+    EmptyCache { name: String },
     #[error("Data error: {0}")]
     DataError(#[from] DataError),
     #[error("Optimizer error: {0}")]

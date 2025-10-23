@@ -7,7 +7,7 @@ use std::{
 
 use crate::{
     errors::DataError,
-    params::{RING_BUFFER_SIZE, SEQUENCE_LENGTH, get_rng},
+    params::{GLOBAL_RNG, RING_BUFFER_SIZE, SEQUENCE_LENGTH},
 };
 
 pub struct Batch {
@@ -62,7 +62,7 @@ where
     head: usize, // next write index (oldest element lives at `head`)
     filled: bool,
     advance: usize, // how many new tokens to pull per batch (e.g., T)
-    rng: StdRng,
+
     stream: S,
     exhausted: bool,
 }
@@ -80,7 +80,7 @@ where
             filled: false,
             sequence_length: t,
             advance: advance.max(1),
-            rng: get_rng(seed),
+
             stream,
             exhausted: false,
         }
@@ -113,8 +113,10 @@ where
 
         // sample B random contiguous windows inside the ring
         let max_start = self.cap - (self.sequence_length + 1);
+        let mut rng = GLOBAL_RNG.lock();
+
         for bi in 0..batch_size {
-            let start = self.rng.random_range(0..=max_start);
+            let start = rng.random_range(0..=max_start);
             for k in 0..self.sequence_length {
                 x[[bi, k]] = self.ring_get(start + k);
                 y[[bi, k]] = self.ring_get(start + k + 1);

@@ -11,8 +11,8 @@ use crate::{
     },
     params::{
         ADAMW_BETA1, ADAMW_BETA2, ADAMW_EPSILON, ATTENTION_HEADS, BATCH_SIZE, DROPOUT_RATE,
-        EMBED_DIMENSION, FF_HIDDEN_DIMENSION, LEARNING_RATE, MutableRng, SEQUENCE_LENGTH,
-        TEMPERATURE, TRANSFORMER_BLOCKS, WEIGHT_DECAY, get_rng,
+        EMBED_DIMENSION, FF_HIDDEN_DIMENSION, GLOBAL_RNG, LEARNING_RATE, SEQUENCE_LENGTH,
+        TEMPERATURE, TRANSFORMER_BLOCKS, WEIGHT_DECAY,
     },
 };
 
@@ -22,8 +22,7 @@ pub struct CrabformerModel {
     layers: Vec<Box<Layer3Df32>>,
     // Final layer to project to vocabulary size (no weight tying to reuse input embeddings layer)
     output_layer: LinearLayer,
-    seed: Option<u64>,
-    rng: MutableRng,
+
     // Training mode flag
     training: bool,
     // Cache for backward pass
@@ -34,43 +33,52 @@ pub struct CrabformerModel {
 
 impl CrabformerModel {
     pub fn new(vocab_size: usize, seed: Option<u64>) -> Result<Self, ModelError> {
-        let transformer_block = || -> Result<Box<TransformerBlock>, ModelError> {
+        let transformer_block = |i: usize| -> Result<Box<TransformerBlock>, ModelError> {
+            let name = format!("TransformerBlock_{}", i);
             let block = TransformerBlock::new(
                 EMBED_DIMENSION,
                 ATTENTION_HEADS,     // num_heads
                 FF_HIDDEN_DIMENSION, // dim_ff
                 DROPOUT_RATE,
-                seed,
+                Some(name),
             )?;
             Ok(Box::new(block))
         };
 
         let mut layers: Vec<_> = (0..TRANSFORMER_BLOCKS)
-            .map(|_| transformer_block().map(|b| b as Box<Layer3Df32>))
+            .map(|i| transformer_block(i).map(|b| b as Box<Layer3Df32>))
             .collect::<Result<Vec<Box<Layer3Df32>>, ModelError>>()?;
 
         // Add final layer norm
         layers.push(Box::new(crate::layers::normalization::LayerNormLayer::new(
             EMBED_DIMENSION,
+            Some("FinalLayerNorm".into()),
         )));
 
         Ok(Self {
-            token_embedding_layer: EmbeddingLayer::new(vocab_size, EMBED_DIMENSION, seed),
-            position_embedding_layer: EmbeddingLayer::new(SEQUENCE_LENGTH, EMBED_DIMENSION, seed),
+            token_embedding_layer: EmbeddingLayer::new(
+                vocab_size,
+                EMBED_DIMENSION,
+                Some("TokenEmbeddingLayer".into()),
+            ),
+            position_embedding_layer: EmbeddingLayer::new(
+                SEQUENCE_LENGTH,
+                EMBED_DIMENSION,
+                Some("PositionEmbeddingLayer".into()),
+            ),
             layers,
-            output_layer: LinearLayer::new(EMBED_DIMENSION, vocab_size, seed),
-            seed,
-            rng: MutableRng::new(seed),
+            output_layer: LinearLayer::new(EMBED_DIMENSION, vocab_size, Some("OutputLayer".into())),
+
             training: false,
             adamw_optimizer: Some(AdamWOptimizer::new(
                 LEARNING_RATE,
-                WEIGHT_DECAY,
                 ADAMW_BETA1,
                 ADAMW_BETA2,
                 ADAMW_EPSILON,
+                WEIGHT_DECAY,
             )),
-            last_embeddings: LayerCacheParam::new("CrabformerModel::last_embeddings"),
-            last_positions: LayerCacheParam::new("CrabformerModel::last_positions"),
+            last_embeddings: LayerCacheParam::new("CrabformerModel::last_embeddings".to_string()),
+            last_positions: LayerCacheParam::new("CrabformerModel::last_positions".to_string()),
         })
     }
 
@@ -80,7 +88,8 @@ impl CrabformerModel {
         assert_eq!(seq_length, SEQUENCE_LENGTH);
 
         let mut next_tokens = Vec::with_capacity(batch_size);
-        let mut rng = get_rng(self.seed);
+
+        let mut rng = GLOBAL_RNG.lock();
         for batch_idx in 0..batch_size {
             // Get the logits for the last token in the sequence
             let mut last_token_logits = model_output
@@ -113,7 +122,7 @@ impl CrabformerModel {
         token_embedding_output += &position_embedding_output;
 
         // Apply dropout to embeddings
-        token_embedding_output.apply_dropout(DROPOUT_RATE, &mut get_rng(self.seed));
+        token_embedding_output.apply_dropout(DROPOUT_RATE);
 
         let mut output = token_embedding_output;
         for layer in &self.layers {
@@ -141,7 +150,7 @@ impl CrabformerModel {
         token_embedding_output += &position_embedding_output;
 
         // Apply dropout to embeddings
-        token_embedding_output.apply_dropout(DROPOUT_RATE, &mut get_rng(self.seed));
+        token_embedding_output.apply_dropout(DROPOUT_RATE);
 
         // Cache for backward pass
         *self.last_embeddings.mut_ref() = Some(token_embedding_output.clone());

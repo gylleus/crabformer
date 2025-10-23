@@ -40,20 +40,23 @@ pub struct LayerNormLayer {
     last_input: LayerCacheParam<Array3<f32>>,
     last_normalized: LayerCacheParam<Array3<f32>>,
     training: bool,
+    name: String,
 }
 
 impl LayerNormLayer {
     const EPSILON: f32 = 1e-5;
 
-    pub fn new(dim: usize) -> Self {
+    pub fn new(dim: usize, name: Option<String>) -> Self {
+        let name = name.unwrap_or("LayerNormLayer".into());
         Self {
             scale: Array::ones(dim),
             shift: Array::zeros(dim),
-            scale_grad: LayerCacheParam::new("LayerNormLayer::scale_grad"),
-            shift_grad: LayerCacheParam::new("LayerNormLayer::shift_grad"),
-            last_input: LayerCacheParam::new("LayerNormLayer::last_input"),
-            last_normalized: LayerCacheParam::new("LayerNormLayer::last_normalized"),
+            scale_grad: LayerCacheParam::new(format!("{}::scale_grad", name)),
+            shift_grad: LayerCacheParam::new(format!("{}::shift_grad", name)),
+            last_input: LayerCacheParam::new(format!("{}::last_input", name)),
+            last_normalized: LayerCacheParam::new(format!("{}::last_normalized", name)),
             training: false,
+            name,
         }
     }
 
@@ -76,6 +79,10 @@ impl LayerNormLayer {
 impl Layer for LayerNormLayer {
     type Input = Array3<f32>;
     type Output = Array3<f32>;
+
+    fn name(&self) -> &str {
+        &self.name
+    }
 
     fn forward(&self, input: &Self::Input) -> Self::Output {
         let mut output = input.clone();

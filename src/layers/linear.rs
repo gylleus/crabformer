@@ -8,7 +8,6 @@ use crate::{
         activation::{GELU, gelu_derivative},
         xavier_initialized_array,
     },
-    params::get_rng,
 };
 
 /// Wrapper struct around 2D linear layer to provide 3D data interface
@@ -22,20 +21,23 @@ pub struct LinearLayer {
     last_input: LayerCacheParam<Array3<f32>>,
 
     training: bool,
+    name: String,
 }
 
 impl LinearLayer {
-    pub fn new(dim_in: usize, dim_out: usize, seed: Option<u64>) -> Self {
+    pub fn new(dim_in: usize, dim_out: usize, name: Option<String>) -> Self {
         // let linear_2d = LinearLayer2D::new(dim_in, dim_out, seed);
+        let name = name.unwrap_or("LinearLayer".into());
         Self {
             // linear: linear_2d,
             // last_input_shape: LayerCacheParam::new(None),
-            weights: xavier_initialized_array(dim_in, dim_out, &mut get_rng(seed)),
+            weights: xavier_initialized_array(dim_in, dim_out),
             bias: None,
-            weight_grad: LayerCacheParam::new("LinearLayer::weight_grad"),
-            bias_grad: LayerCacheParam::new("LinearLayer::bias_grad"),
-            last_input: LayerCacheParam::new("LinearLayer::last_input"),
+            weight_grad: LayerCacheParam::new(format!("{}::weight_grad", name)),
+            bias_grad: LayerCacheParam::new(format!("{}::bias_grad", name)),
+            last_input: LayerCacheParam::new(format!("{}::last_input", name)),
             training: false,
+            name,
         }
     }
 
@@ -48,6 +50,10 @@ impl LinearLayer {
 impl Layer for LinearLayer {
     type Input = Array3<f32>;
     type Output = Array3<f32>;
+
+    fn name(&self) -> &str {
+        &self.name
+    }
 
     fn forward(&self, input: &Self::Input) -> Self::Output {
         let (batch_size, seq_len, dim_in) = input.dim();
@@ -167,18 +173,23 @@ pub struct FeedForwardLayer {
     // Cache for backward pass (stores hidden state before GELU activation)
     last_hidden: LayerCacheParam<Array3<f32>>,
     training: bool,
+
+    name: String,
 }
 
 impl FeedForwardLayer {
-    pub fn new(dim_model: usize, dim_ff: usize, seed: Option<u64>) -> Self {
-        let linear1 = LinearLayer::new(dim_model, dim_ff, seed);
-        let linear2 = LinearLayer::new(dim_ff, dim_model, seed);
+    pub fn new(dim_model: usize, dim_ff: usize, name: Option<String>) -> Self {
+        let name = name.unwrap_or("FeedForwardLayer".into());
+
+        let linear1 = LinearLayer::new(dim_model, dim_ff, Some(format!("{}::linear1", name)));
+        let linear2 = LinearLayer::new(dim_ff, dim_model, Some(format!("{}::linear2", name)));
 
         Self {
             linear1,
             linear2,
-            last_hidden: LayerCacheParam::new("FeedForwardLayer::last_hidden"),
+            last_hidden: LayerCacheParam::new(format!("{}::last_hidden", name)),
             training: false,
+            name,
         }
     }
 }
@@ -186,6 +197,10 @@ impl FeedForwardLayer {
 impl Layer for FeedForwardLayer {
     type Input = Array3<f32>;
     type Output = Array3<f32>;
+
+    fn name(&self) -> &str {
+        &self.name
+    }
 
     fn forward(&self, input: &Self::Input) -> Self::Output {
         let mut hidden = self.linear1.forward(input);

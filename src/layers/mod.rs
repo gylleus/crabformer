@@ -3,10 +3,7 @@ use parking_lot::RwLock;
 use ndarray::{Array, Array2, Array3, Data};
 use rand::{Rng, RngCore, TryRngCore, rngs::StdRng};
 
-use crate::{
-    adamw::{Param, ParamHandle},
-    errors::ModelError,
-};
+use crate::{adamw::ParamHandle, errors::ModelError, params::GLOBAL_RNG};
 
 pub mod activation;
 pub mod dropout;
@@ -19,77 +16,13 @@ pub mod transformer_block;
 
 /// Initialize an array with Xavier/Glorot initialization.
 /// This should keep variance of activations and gradients roughly the same across layers, to keep training more stable.
-pub fn xavier_initialized_array(fan_in: usize, fan_out: usize, rng: &mut StdRng) -> Array2<f32> {
+pub fn xavier_initialized_array(fan_in: usize, fan_out: usize) -> Array2<f32> {
     let limit = (6.0 / (fan_in as f32 + fan_out as f32)).sqrt();
 
-    Array::from_shape_fn((fan_in, fan_out), |_| rng.random_range(-limit..limit))
+    Array::from_shape_fn((fan_in, fan_out), |_| {
+        GLOBAL_RNG.lock().random_range(-limit..limit)
+    })
 }
-
-// pub enum Tensor<T> {
-//     Array2(Array2<T>),
-//     Array3(Array3<T>),
-// }
-
-// impl<T> Tensor<T>
-// where
-//     T: Clone + std::ops::Add<Output = T>,
-// {
-//     pub fn as_array2(&self) -> Result<&Array2<T>, ModelError> {
-//         match self {
-//             Tensor::Array2(arr) => Ok(arr),
-//             _ => Err(ModelError::DimensionMismatch("Expected Array2".into())),
-//         }
-//     }
-
-//     pub fn as_array3(&self) -> Result<&Array3<T>, ModelError> {
-//         match self {
-//             Tensor::Array3(arr) => Ok(arr),
-//             _ => Err(ModelError::DimensionMismatch("Expected Array3".into())),
-//         }
-//     }
-
-//     pub fn to_array2(self) -> Result<Array2<T>, ModelError> {
-//         match self {
-//             Tensor::Array2(arr) => Ok(arr),
-//             _ => Err(ModelError::DimensionMismatch("Expected Array2".into())),
-//         }
-//     }
-
-//     pub fn to_array3(self) -> Result<Array3<T>, ModelError> {
-//         match self {
-//             Tensor::Array3(arr) => Ok(arr),
-//             _ => Err(ModelError::DimensionMismatch("Expected Array3".into())),
-//         }
-//     }
-
-//     pub fn add(&self, other: &Self) -> Result<Self, ModelError> {
-//         match (self, other) {
-//             (Tensor::Array2(a), Tensor::Array2(b)) => Ok(Tensor::Array2(a + b)),
-//             (Tensor::Array3(a), Tensor::Array3(b)) => Ok(Tensor::Array3(a + b)),
-//             _ => Err(ModelError::DimensionMismatch(
-//                 "Tensor types do not match for addition".into(),
-//             )),
-//         }
-//     }
-// }
-
-// impl From<Array2<f32>> for Tensor<f32> {
-//     fn from(arr: Array2<f32>) -> Self {
-//         Tensor::Array2(arr)
-//     }
-// }
-
-// impl From<Array3<f32>> for Tensor<f32> {
-//     fn from(arr: Array3<f32>) -> Self {
-//         Tensor::Array3(arr)
-//     }
-// }
-
-// impl From<Array2<u32>> for Tensor<u32> {
-//     fn from(arr: Array2<u32>) -> Self {
-//         Tensor::Array2(arr)
-//     }
-// }
 
 /// Type alias for layers that take 3D f32 arrays as input and output
 pub type Layer3Df32 = dyn Layer<Input = Array3<f32>, Output = Array3<f32>>;
@@ -97,6 +30,8 @@ pub type Layer3Df32 = dyn Layer<Input = Array3<f32>, Output = Array3<f32>>;
 pub trait Layer: ZeroGrad {
     type Input;
     type Output;
+
+    fn name(&self) -> &str;
 
     fn forward(&self, input: &Self::Input) -> Self::Output;
 
@@ -137,16 +72,16 @@ pub struct ParamKey(pub u64);
 pub struct LayerCacheParam<T> {
     pub data: RwLock<Option<T>>,
     pub id: ParamKey,
-    name: &'static str,
+    name: String,
 }
 
 impl<T> LayerCacheParam<T> {
-    pub fn new(layer: &'static str) -> Self {
+    pub fn new(name: String) -> Self {
         let id = rand::rng().next_u64();
         Self {
             data: RwLock::new(None),
             id: ParamKey(id),
-            name: layer,
+            name,
         }
     }
 
@@ -159,7 +94,9 @@ impl<T> LayerCacheParam<T> {
 
         // Check if the Option contains a value
         if guard.is_none() {
-            return Err(ModelError::EmptyCache { name: self.name });
+            return Err(ModelError::EmptyCache {
+                name: self.name.clone(),
+            });
         }
 
         // Map the guard to unwrap the Option while keeping the lock

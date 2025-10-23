@@ -15,7 +15,6 @@ use crate::{
         Layer, LayerCacheParam, ZeroGrad, dropout::Dropout, linear::LinearLayer,
         normalization::Softmax,
     },
-    params::MutableRng,
 };
 
 pub struct MultiHeadAttentionLayer {
@@ -27,8 +26,6 @@ pub struct MultiHeadAttentionLayer {
     dim_out: usize,
     num_heads: usize,
     dropout_rate: f32,
-    // Internal counter to increment the RNG state for each forward pass while keeping reproducibility.
-    rng: MutableRng,
 
     // Training mode flag
     training: bool,
@@ -39,6 +36,8 @@ pub struct MultiHeadAttentionLayer {
     last_keys: LayerCacheParam<Array4<f32>>,
     last_values: LayerCacheParam<Array4<f32>>,
     last_attention_weights: LayerCacheParam<Array4<f32>>,
+
+    name: String,
 }
 
 // Multi-head attention layer block.
@@ -50,8 +49,10 @@ impl MultiHeadAttentionLayer {
         dim_out: usize,
         num_heads: usize,
         dropout_rate: f32,
-        seed: Option<u64>,
+        name: Option<String>,
     ) -> Result<Self, ModelError> {
+        let name = name.unwrap_or("MultiHeadAttentionLayer".into());
+
         if dim_out % num_heads != 0 {
             return Err(ModelError::DimensionMismatch(format!(
                 "dim_out {} must be divisible by num_heads {}",
@@ -60,9 +61,9 @@ impl MultiHeadAttentionLayer {
         }
 
         let (query_weights, key_weights, value_weights) = (
-            LinearLayer::new(dim_in, dim_out, seed),
-            LinearLayer::new(dim_in, dim_out, seed),
-            LinearLayer::new(dim_in, dim_out, seed),
+            LinearLayer::new(dim_in, dim_out, Some(format!("{}::query_weights", name))),
+            LinearLayer::new(dim_in, dim_out, Some(format!("{}::key_weights", name))),
+            LinearLayer::new(dim_in, dim_out, Some(format!("{}::value_weights", name))),
         );
 
         Ok(Self {
@@ -73,15 +74,16 @@ impl MultiHeadAttentionLayer {
             value_weights,
             use_casual_mask: false,
             dropout_rate,
-            rng: MutableRng::new(seed),
             training: false,
-            last_attention_weights: LayerCacheParam::new(
-                "MultiHeadAttentionLayer::last_attention_weights",
-            ),
-            last_values: LayerCacheParam::new("MultiHeadAttentionLayer::last_values"),
-            last_keys: LayerCacheParam::new("MultiHeadAttentionLayer::last_keys"),
-            last_queries: LayerCacheParam::new("MultiHeadAttentionLayer::last_queries"),
-            last_input: LayerCacheParam::new("MultiHeadAttentionLayer::last_input"),
+            last_attention_weights: LayerCacheParam::new(format!(
+                "{}::last_attention_weights",
+                name
+            )),
+            last_values: LayerCacheParam::new(format!("{}::last_values", name)),
+            last_keys: LayerCacheParam::new(format!("{}::last_keys", name)),
+            last_queries: LayerCacheParam::new(format!("{}::last_queries", name)),
+            last_input: LayerCacheParam::new(format!("{}::last_input", name)),
+            name,
         })
     }
 
@@ -110,6 +112,10 @@ impl MultiHeadAttentionLayer {
 impl Layer for MultiHeadAttentionLayer {
     type Input = Array3<f32>;
     type Output = Array3<f32>;
+
+    fn name(&self) -> &str {
+        &self.name
+    }
 
     fn forward(&self, input: &Self::Input) -> Self::Output {
         let (batch_size, seq_len, _embed_dim) = input.dim();
@@ -163,8 +169,6 @@ impl Layer for MultiHeadAttentionLayer {
             None
         };
 
-        let mut rng = self.rng.get_rng();
-
         // TODO: Optimize by using linalg libraries for efficient batched matrix multiplications.
         for batch in 0..batch_size {
             for head in 0..self.num_heads {
@@ -189,7 +193,7 @@ impl Layer for MultiHeadAttentionLayer {
                 attention_weights.softmax(0, None);
 
                 // Apply dropout to attention weights (training only)
-                attention_weights.apply_dropout(self.dropout_rate, &mut rng);
+                attention_weights.apply_dropout(self.dropout_rate);
 
                 if self.training {
                     attention_weights_all
@@ -214,42 +218,14 @@ impl Layer for MultiHeadAttentionLayer {
             }
         }
 
+        if self.training {
+            *self.last_attention_weights.mut_ref() = attention_weights_all;
+        }
+
         output
     }
 
     fn backward(&mut self, grad_output: &Self::Output) -> Result<Self::Input, ModelError> {
-        // Get cached values
-        // let input = self
-        //     .last_input
-        //     .read_ref()
-        //     .as_ref()
-        //     .ok_or_else(|| ModelError::EmptyCache("MultiHeadAttentionLayer"))?
-        //     .clone();
-        // let queries = self
-        //     .last_queries
-        //     .read_ref()
-        //     .as_ref()
-        //     .ok_or_else(|| {
-        //         ModelError::TrainingError("train() must be called before backward".into())
-        //     })?
-        //     .clone();
-        // let keys = self
-        //     .last_keys
-        //     .read_ref()
-        //     .as_ref()
-        //     .ok_or_else(|| {
-        //         ModelError::TrainingError("train() must be called before backward".into())
-        //     })?
-        //     .clone();
-        // let values = self
-        //     .last_values
-        //     .read_ref()
-        //     .as_ref()
-        //     .ok_or_else(|| {
-        //         ModelError::TrainingError("train() must be called before backward".into())
-        //     })?
-        //     .clone();
-
         let input = self.last_input.read_ref()?;
         let queries = self.last_queries.read_ref()?;
         let keys = self.last_keys.read_ref()?;
