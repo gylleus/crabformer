@@ -2,11 +2,12 @@ use ndarray::{Array2, Array3, s};
 use rand::distr::{Distribution, weighted::WeightedIndex};
 
 use crate::{
-    data::Batch,
+    adamw::ParamHandle,
+    data::{Batch, DataLoader},
     errors::ModelError,
     layers::{
-        Layer, dropout::Dropout, embedding::EmbeddingLayer, linear::LinearLayer,
-        normalization::Softmax, transformer_block::TransformerBlock,
+        Layer, Layer3Df32, LayerCacheParam, ZeroGrad, dropout::Dropout, embedding::EmbeddingLayer,
+        linear::LinearLayer, normalization::Softmax, transformer_block::TransformerBlock,
     },
     params::{
         ATTENTION_HEADS, BATCH_SIZE, DROPOUT_RATE, EMBED_DIMENSION, FF_HIDDEN_DIMENSION,
@@ -17,11 +18,16 @@ use crate::{
 pub struct CrabformerModel {
     token_embedding_layer: EmbeddingLayer,
     position_embedding_layer: EmbeddingLayer,
-    layers: Vec<Box<dyn Layer>>,
+    layers: Vec<Box<Layer3Df32>>,
     // Final layer to project to vocabulary size (no weight tying to reuse input embeddings layer)
     output_layer: LinearLayer,
     seed: Option<u64>,
     rng: MutableRng,
+    // Training mode flag
+    training: bool,
+    // Cache for backward pass
+    last_embeddings: LayerCacheParam<Array3<f32>>,
+    last_positions: LayerCacheParam<Array2<u32>>,
 }
 
 impl CrabformerModel {
@@ -37,9 +43,9 @@ impl CrabformerModel {
             Ok(Box::new(block))
         };
 
-        let mut layers: Vec<Box<dyn Layer>> = (0..TRANSFORMER_BLOCKS)
-            .map(|_| transformer_block().map(|b| b as Box<dyn Layer>))
-            .collect::<Result<Vec<Box<dyn Layer>>, ModelError>>()?;
+        let mut layers: Vec<_> = (0..TRANSFORMER_BLOCKS)
+            .map(|_| transformer_block().map(|b| b as Box<Layer3Df32>))
+            .collect::<Result<Vec<Box<Layer3Df32>>, ModelError>>()?;
 
         // Add final layer norm
         layers.push(Box::new(crate::layers::normalization::LayerNormLayer::new(
@@ -53,6 +59,9 @@ impl CrabformerModel {
             output_layer: LinearLayer::new(EMBED_DIMENSION, vocab_size, seed),
             seed,
             rng: MutableRng::new(seed),
+            training: false,
+            last_embeddings: LayerCacheParam::new("CrabformerModel::last_embeddings"),
+            last_positions: LayerCacheParam::new("CrabformerModel::last_positions"),
         })
     }
 
@@ -103,8 +112,167 @@ impl CrabformerModel {
         }
 
         // Final output layer to get logits for each token in the vocabulary
-        output = self.output_layer.forward_3d(&output);
+        output = self.output_layer.forward(&output);
 
         output
+    }
+
+    /// Forward pass with caching for training
+    pub fn forward_train(&mut self, input: &Batch) -> Array3<f32> {
+        let mut token_embedding_output = self.token_embedding_layer.forward(&input.x);
+
+        let (batch_size, sequence_length) = input.x.dim();
+
+        let positions = Array2::from_shape_fn((batch_size, sequence_length), |(_, j)| {
+            j as u32 // Each position in the sequence gets its index
+        });
+
+        let position_embedding_output = self.position_embedding_layer.forward(&positions);
+
+        token_embedding_output += &position_embedding_output;
+
+        // Apply dropout to embeddings
+        token_embedding_output.apply_dropout(DROPOUT_RATE, &mut get_rng(self.seed));
+
+        // Cache for backward pass
+        *self.last_embeddings.mut_ref() = Some(token_embedding_output.clone());
+        *self.last_positions.mut_ref() = Some(positions);
+
+        let mut output = token_embedding_output;
+        for layer in &mut self.layers {
+            output = layer.forward(&output);
+        }
+
+        // Final output layer to get logits for each token in the vocabulary
+        output = self.output_layer.forward(&output);
+
+        output
+    }
+
+    /// Backward pass: propagates gradients through the model
+    ///
+    /// # Arguments
+    /// * `grad_output` - Gradient of loss w.r.t. model output [batch_size, seq_len, vocab_size]
+    ///
+    /// # Returns
+    /// Result indicating success or error
+    pub fn backward(&mut self, grad_output: &Array3<f32>) -> Result<(), ModelError> {
+        // Backprop through output layer
+        let mut grad = self.output_layer.backward(grad_output)?;
+
+        // Backprop through transformer layers in reverse
+        for layer in self.layers.iter_mut().rev() {
+            grad = layer.backward(&grad)?;
+        }
+
+        // Backprop through dropout (approximation: pass through)
+
+        // Backprop through position embeddings
+        self.position_embedding_layer.backward(&grad)?;
+
+        // Backprop through token embeddings
+        // The gradient is the same for both embedding layers since they're added together
+        self.token_embedding_layer.backward(&grad)?;
+
+        Ok(())
+    }
+
+    /// Set model to training mode
+    fn set_training(&mut self, training: bool) {
+        self.training = training;
+        for layer in &mut self.layers {
+            if training {
+                layer.set_train();
+            } else {
+                layer.set_eval();
+            }
+        }
+        self.token_embedding_layer.set_train();
+        self.position_embedding_layer.set_train();
+        self.output_layer.set_train();
+    }
+
+    /// Zero out all gradients
+    pub fn zero_grad(&mut self) {
+        self.token_embedding_layer.zero_grad();
+        self.position_embedding_layer.zero_grad();
+        self.output_layer.zero_grad();
+
+        // Zero grad for transformer blocks
+        for layer in &mut self.layers {
+            layer.zero_grad();
+        }
+    }
+
+    /// Training loop
+    ///
+    /// # Arguments
+    /// * `data_loader` - DataLoader providing training batches
+    /// * `num_epochs` - Number of epochs to train
+    /// * `learning_rate` - Learning rate for optimizer
+    ///
+    /// # Returns
+    /// Result indicating success or error
+    pub fn train(
+        &mut self,
+        data_loader: &mut DataLoader,
+        num_epochs: usize,
+        learning_rate: f32,
+    ) -> Result<(), ModelError> {
+        use crate::loss::{cross_entropy_loss, cross_entropy_loss_backward};
+
+        self.set_training(true);
+
+        for epoch in 0..num_epochs {
+            let mut total_loss = 0.0;
+            let mut num_batches = 0;
+
+            // Reset data loader for new epoch
+            // data_loader.reset();
+
+            while let Some(batch) = data_loader
+                .next_batch()
+                .map_err(|e| ModelError::DataError(e))?
+            {
+                // Zero gradients
+                self.zero_grad();
+
+                // Forward pass
+                let logits = self.forward_train(&batch);
+
+                // Compute loss
+                let loss = cross_entropy_loss(&logits, &batch.y);
+                total_loss += loss;
+                num_batches += 1;
+
+                // Compute gradients
+                let grad_logits = cross_entropy_loss_backward(&logits, &batch.y);
+
+                // Backward pass
+                self.backward(&grad_logits)?;
+
+                // Update weights (placeholder - need to integrate optimizer)
+                // For now, we'll just do a simple gradient descent step
+                // TODO: Integrate AdamW optimizer
+                let params: Vec<ParamHandle> = self
+                    .token_embedding_layer
+                    .get_params()
+                    .into_iter()
+                    .chain(self.position_embedding_layer.get_params())
+                    .chain(self.output_layer.get_params())
+                    .chain(self.layers.iter_mut().flat_map(|layer| layer.get_params()))
+                    .collect();
+
+                if num_batches % 10 == 0 {
+                    println!("Epoch {}, Batch {}, Loss: {:.4}", epoch, num_batches, loss);
+                }
+            }
+
+            let avg_loss = total_loss / num_batches as f32;
+            println!("Epoch {} completed. Average loss: {:.4}", epoch, avg_loss);
+        }
+
+        self.set_training(false);
+        Ok(())
     }
 }

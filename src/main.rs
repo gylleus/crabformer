@@ -1,6 +1,8 @@
+mod adamw;
 mod data;
 mod errors;
 mod layers;
+mod loss;
 mod model;
 mod params;
 mod tokenizer;
@@ -28,16 +30,22 @@ fn main() {
     let args = CLIArgs::parse();
 
     println!("Using data file: {}", args.data_file.join(", "));
-    let mut data =
+    let mut data_loader =
         data::DataLoader::new(args.data_file, BATCH_SIZE, None).expect("Failed to load data");
 
     let tokenizer = ByteTokenizer;
     let vocab_size = tokenizer.vocab_size();
 
     let seed = None;
-    let model = model::CrabformerModel::new(vocab_size, seed).expect("Failed to create model");
+    let mut model = model::CrabformerModel::new(vocab_size, seed).expect("Failed to create model");
+    model
+        .train(&mut data_loader, 1, 0.001)
+        .expect("Failed to train model");
 
-    let batch = data.next_batch().expect("no data").expect("batch is None");
+    let batch = data_loader
+        .next_batch()
+        .expect("no data")
+        .expect("batch is None");
     // let res = model.forward_batch(&batch);
     // let next_tokens = model.next_token_batch(&batch);
 

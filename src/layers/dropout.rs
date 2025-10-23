@@ -25,16 +25,11 @@ where
     }
 }
 
-// pub struct DropoutLayer {
-//     pub dropout_rate: f32,
-//     // Internal counter to increment the RNG state for each forward pass while keeping reproducibility.
-//     rng: MutableRng,
-// }
-
-// impl Layer for DropoutLayer {
-//     fn forward(&self, input: &Array3<f32>) -> Array3<f32> {
-//         let mut output = input.clone();
-//         output.with_dropout(self.dropout_rate, &mut self.rng.get_rng());
-//         output
+// impl Dropout for Tensor {
+//     fn apply_dropout(&mut self, dropout_rate: f32, rng: &mut StdRng) {
+//         match self {
+//             Tensor::Array3(arr) => arr.apply_dropout(dropout_rate, rng),
+//             Tensor::Array2(arr) => arr.apply_dropout(dropout_rate, rng),
+//         }
 //     }
 // }
