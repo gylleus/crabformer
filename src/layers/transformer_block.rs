@@ -75,8 +75,10 @@ impl Layer for TransformerBlock {
         let mut attention_output = self.self_attention.forward(&layer_normalized_input);
         // .to_array3()?;
 
-        // Apply dropout after attention
-        attention_output.apply_dropout(self.dropout_rate);
+        // Apply dropout after attention (only during training)
+        if self.training {
+            attention_output.apply_dropout(self.dropout_rate);
+        }
 
         // Residual connection (skip connection)
         attention_output += input;
@@ -87,8 +89,10 @@ impl Layer for TransformerBlock {
         // Feed-forward sub-layer
         let mut feed_forward_output = self.feed_forward.forward(&layer_normalized_attention);
 
-        // Apply dropout after feed-forward
-        feed_forward_output.apply_dropout(self.dropout_rate);
+        // Apply dropout after feed-forward (only during training)
+        if self.training {
+            feed_forward_output.apply_dropout(self.dropout_rate);
+        }
 
         // Second residual connection
         attention_output += &feed_forward_output;

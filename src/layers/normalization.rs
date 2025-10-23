@@ -86,16 +86,22 @@ impl Layer for LayerNormLayer {
 
     fn forward(&self, input: &Self::Input) -> Self::Output {
         let mut output = input.clone();
+        let (batch_size, seq_len, dim) = input.dim();
 
-        for mut sample in output.axis_iter_mut(Axis(0)) {
-            let feature_axis = Axis(1);
+        // Normalize each token (each position in batch x seq) across its features (dim)
+        for b in 0..batch_size {
+            for s in 0..seq_len {
+                // Get the feature vector for this specific token position
+                let mut feature_vector = output.slice_mut(ndarray::s![b, s, ..]);
 
-            for mut feature_vector in sample.axis_iter_mut(feature_axis) {
+                // Compute mean and variance across features for this token
                 let mean = feature_vector.mean().unwrap_or(0.0);
                 let var = feature_vector.var(0.0);
+                let std = (var + Self::EPSILON).sqrt();
 
+                // Normalize: (x - mean) / std
                 for elem in feature_vector.iter_mut() {
-                    *elem = (*elem - mean) / (var + Self::EPSILON).sqrt();
+                    *elem = (*elem - mean) / std;
                 }
             }
         }

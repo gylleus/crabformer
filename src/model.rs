@@ -121,8 +121,10 @@ impl CrabformerModel {
 
         token_embedding_output += &position_embedding_output;
 
-        // Apply dropout to embeddings
-        token_embedding_output.apply_dropout(DROPOUT_RATE);
+        // Apply dropout to embeddings (only during training)
+        if self.training {
+            token_embedding_output.apply_dropout(DROPOUT_RATE);
+        }
 
         let mut output = token_embedding_output;
         for layer in &self.layers {
@@ -205,9 +207,17 @@ impl CrabformerModel {
                 layer.set_eval();
             }
         }
-        self.token_embedding_layer.set_train();
-        self.position_embedding_layer.set_train();
-        self.output_layer.set_train();
+
+        // Set training mode for embedding and output layers
+        if training {
+            self.token_embedding_layer.set_train();
+            self.position_embedding_layer.set_train();
+            self.output_layer.set_train();
+        } else {
+            self.token_embedding_layer.set_eval();
+            self.position_embedding_layer.set_eval();
+            self.output_layer.set_eval();
+        }
     }
 
     /// Zero out all gradients

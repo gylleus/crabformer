@@ -17,7 +17,8 @@ where
 /// GELU activation function: GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x^3)))
 /// Approximation used in the original paper
 pub fn gelu(x: f32) -> f32 {
-    0.5 * x * (1.0 + (x / std::f32::consts::SQRT_2).tanh())
+    let sqrt_2_over_pi = (2.0 / std::f32::consts::PI).sqrt();
+    0.5 * x * (1.0 + (sqrt_2_over_pi * (x + 0.044715 * x.powi(3))).tanh())
 }
 
 /// Derivative of GELU activation function

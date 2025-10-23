@@ -193,7 +193,9 @@ impl Layer for MultiHeadAttentionLayer {
                 attention_weights.softmax(0, None);
 
                 // Apply dropout to attention weights (training only)
-                attention_weights.apply_dropout(self.dropout_rate);
+                if self.training {
+                    attention_weights.apply_dropout(self.dropout_rate);
+                }
 
                 if self.training {
                     attention_weights_all
@@ -268,12 +270,19 @@ impl Layer for MultiHeadAttentionLayer {
                 let mut grad_attn_after_dropout = grad_attn_weights.clone();
 
                 // Backprop through softmax
-                // For softmax: dy/dx = softmax(x) * (grad - sum(grad * softmax(x)))
-                let sum_grad = (&grad_attn_after_dropout * &attn_weights).sum();
+                // For softmax applied per row: dy/dx_ij = softmax_ij * (grad_ij - sum_k(grad_ik * softmax_ik))
+                // We need to compute the sum per row, not globally
                 for i in 0..seq_len {
+                    // Compute sum for this row
+                    let mut sum_grad_row = 0.0;
+                    for j in 0..seq_len {
+                        sum_grad_row += grad_attn_after_dropout[[i, j]] * attn_weights[[i, j]];
+                    }
+
+                    // Apply gradient formula for this row
                     for j in 0..seq_len {
                         grad_attn_after_dropout[[i, j]] =
-                            attn_weights[[i, j]] * (grad_attn_after_dropout[[i, j]] - sum_grad);
+                            attn_weights[[i, j]] * (grad_attn_after_dropout[[i, j]] - sum_grad_row);
                     }
                 }
 
