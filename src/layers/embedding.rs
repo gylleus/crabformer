@@ -1,6 +1,7 @@
 use crate::{
     errors::ModelError,
     layers::{Layer, LayerCacheParam, ZeroGrad, xavier_initialized_array},
+    metrics::TrainingMetricsHandle,
 };
 use ndarray::{Axis, s};
 
@@ -101,7 +102,7 @@ impl Layer for EmbeddingLayer {
         Ok(input_tokens.clone())
     }
 
-    fn set_train(&mut self) {
+    fn set_train(&mut self, _metrics_handle: TrainingMetricsHandle) {
         self.training = true;
     }
 

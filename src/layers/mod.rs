@@ -4,7 +4,9 @@ use ndarray::{Array, Array2, Array3, Data};
 use rand::{Rng, RngCore, TryRngCore, rngs::StdRng};
 use serde::{Serialize, de::DeserializeOwned};
 
-use crate::{adamw::ParamHandle, errors::ModelError, params::GLOBAL_RNG};
+use crate::{
+    adamw::ParamHandle, errors::ModelError, metrics::TrainingMetricsHandle, params::GLOBAL_RNG,
+};
 
 pub mod activation;
 pub mod dropout;
@@ -47,14 +49,10 @@ pub trait Layer: ZeroGrad + Serialize + DeserializeOwned {
     fn backward(&mut self, grad_output: &Self::Output) -> Result<Self::Input, ModelError>;
 
     /// Set the layer to training mode (enables caching for backward pass)
-    fn set_train(&mut self) {
-        // Default: no-op
-    }
+    fn set_train(&mut self, metrics_handle: TrainingMetricsHandle) {}
 
     /// Set the layer to evaluation mode (disables caching to save memory)
-    fn set_eval(&mut self) {
-        // Default: no-op
-    }
+    fn set_eval(&mut self) {}
 
     fn get_params(&mut self) -> Vec<ParamHandle> {
         Vec::new()

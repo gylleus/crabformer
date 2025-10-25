@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     errors::ModelError,
     layers::{Layer, LayerCacheParam, ZeroGrad},
+    metrics::TrainingMetricsHandle,
 };
 
 pub trait Softmax {
@@ -214,7 +215,7 @@ impl Layer for LayerNormLayer {
         Ok(grad_input.into())
     }
 
-    fn set_train(&mut self) {
+    fn set_train(&mut self, _metrics_handle: TrainingMetricsHandle) {
         self.training = true;
     }
 

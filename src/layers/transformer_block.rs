@@ -1,4 +1,7 @@
-use std::fmt::format;
+use std::{
+    fmt::format,
+    time::{Duration, Instant},
+};
 
 use ndarray::Array3;
 use serde::{Deserialize, Serialize};
@@ -9,6 +12,7 @@ use crate::{
         Layer, LayerCacheParam, ZeroGrad, dropout::Dropout, linear::FeedForwardLayer,
         multi_head_attention::MultiHeadAttentionLayer, normalization::LayerNormLayer,
     },
+    metrics::TrainingMetricsHandle,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -23,6 +27,9 @@ pub struct TransformerBlock {
     training: bool,
 
     name: String,
+
+    #[serde(skip)]
+    metrics_handle: Option<TrainingMetricsHandle>,
 }
 
 impl TransformerBlock {
@@ -58,6 +65,7 @@ impl TransformerBlock {
             dropout_rate,
             training: false,
             name,
+            metrics_handle: None,
         })
     }
 }
@@ -71,11 +79,17 @@ impl Layer for TransformerBlock {
     }
 
     fn forward(&self, input: &Self::Input) -> Self::Output {
+        let start_time = Instant::now();
+        let mut total_norm_duration = Duration::ZERO;
+
+        let norm_start = Instant::now();
         let layer_normalized_input = self.layer_norm.forward(input);
+        total_norm_duration += norm_start.elapsed();
 
         // Self-attention sub-layer
+        let attn_start = Instant::now();
         let mut attention_output = self.self_attention.forward(&layer_normalized_input);
-        // .to_array3()?;
+        let attention_duration = attn_start.elapsed();
 
         // Apply dropout after attention (only during training)
         if self.training {
@@ -86,14 +100,30 @@ impl Layer for TransformerBlock {
         attention_output += input;
 
         // Normalize again before feed-forward
+        let norm_start = Instant::now();
         let layer_normalized_attention = self.feed_forward_layer_norm.forward(&attention_output);
+        total_norm_duration += norm_start.elapsed();
 
         // Feed-forward sub-layer
+        let ff_start = Instant::now();
         let mut feed_forward_output = self.feed_forward.forward(&layer_normalized_attention);
+        let ff_duration = ff_start.elapsed();
 
         // Apply dropout after feed-forward (only during training)
         if self.training {
             feed_forward_output.apply_dropout(self.dropout_rate);
+            if let Some(metrics_handle) = &self.metrics_handle {
+                // metrics_handle
+                //     .lock()
+                //     .transformer_block_duration
+                //     .forward_duration += start_time.elapsed();
+
+                let mut metrics = metrics_handle.lock();
+                metrics.attention_duration.forward_duration += attention_duration;
+                metrics.layer_norm_duration.forward_duration += total_norm_duration;
+                metrics.feed_forward_duration.forward_duration += ff_duration;
+                metrics.transformer_block_duration.forward_duration += start_time.elapsed();
+            }
         }
 
         // Second residual connection
@@ -103,6 +133,9 @@ impl Layer for TransformerBlock {
     }
 
     fn backward(&mut self, grad_output: &Self::Output) -> Result<Self::Input, ModelError> {
+        let start_time = Instant::now();
+        let mut total_norm_duration = Duration::ZERO;
+
         // Start with gradient flowing back from output
         let grad = grad_output.clone();
 
@@ -116,10 +149,15 @@ impl Layer for TransformerBlock {
         // In training, dropout zeros out some values, but we'll approximate by passing through
 
         // Backprop through feed-forward layer
+        let ff_start = Instant::now();
+
         let grad_from_ff = self.feed_forward.backward(&grad_ff_output)?;
+        let ff_duration = ff_start.elapsed();
 
         // Backprop through second layer norm
+        let norm_start = Instant::now();
         let grad_attention_from_norm = self.feed_forward_layer_norm.backward(&grad_from_ff)?;
+        total_norm_duration += norm_start.elapsed();
 
         // Combine gradients from both residual paths
         let grad_attention_total = &grad_attention_from_norm + &grad_attention_after_residual;
@@ -127,25 +165,41 @@ impl Layer for TransformerBlock {
         // Backprop through dropout after attention (approximation: pass through)
 
         // Backprop through self-attention
+        let attention_start = Instant::now();
         let grad_layer_norm_input = self.self_attention.backward(&grad_attention_total)?;
+        let attention_duration = attention_start.elapsed();
 
         // Backprop through first layer norm
+        let norm_start = Instant::now();
         let grad_input_from_norm = self.layer_norm.backward(&grad_layer_norm_input)?;
+        total_norm_duration += norm_start.elapsed();
 
         // Combine gradients from both residual paths
         let grad_input = grad_input_from_norm + &grad_attention_total;
 
+        // Update metrics
+        if let Some(metrics_handle) = &self.metrics_handle {
+            let mut metrics = metrics_handle.lock();
+
+            metrics.attention_duration.backward_duration += attention_duration;
+            metrics.layer_norm_duration.backward_duration += total_norm_duration;
+            metrics.feed_forward_duration.backward_duration += ff_duration;
+            metrics.transformer_block_duration.backward_duration += start_time.elapsed();
+        }
+
         Ok(grad_input)
     }
 
-    fn set_train(&mut self) {
+    fn set_train(&mut self, metrics_handle: TrainingMetricsHandle) {
         self.training = true;
+        self.metrics_handle = Some(metrics_handle.clone());
 
         // Set sublayers to training mode
-        self.self_attention.set_train();
-        self.feed_forward.set_train();
-        self.layer_norm.set_train();
-        self.feed_forward_layer_norm.set_train();
+        self.self_attention.set_train(metrics_handle.clone());
+        self.feed_forward.set_train(metrics_handle.clone());
+        self.layer_norm.set_train(metrics_handle.clone());
+        self.feed_forward_layer_norm
+            .set_train(metrics_handle.clone());
     }
 
     fn set_eval(&mut self) {

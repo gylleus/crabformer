@@ -12,7 +12,7 @@ pub const SAVE_EVERY_N_STEPS: usize = 50;
 pub const TEMPERATURE: f32 = 0.9;
 
 /// Dimension of the hidden layer in the feed-forward layers for the transformer blocks.
-pub const FF_HIDDEN_DIMENSION: usize = 32;
+pub const FF_HIDDEN_DIMENSION: usize = 128;
 pub const ATTENTION_HEADS: usize = 4;
 pub const TRANSFORMER_BLOCKS: usize = 4;
 /// The length of each training sequence (T tokens).

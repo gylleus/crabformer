@@ -16,6 +16,8 @@ use crate::{
         Layer, LayerCacheParam, ZeroGrad, dropout::Dropout, linear::LinearLayer,
         normalization::Softmax,
     },
+    metrics::TrainingMetricsHandle,
+    params::SEQUENCE_LENGTH,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -31,6 +33,10 @@ pub struct MultiHeadAttentionLayer {
 
     // Training mode flag
     training: bool,
+
+    // Locally cached causal mask (lazily initialized during first forward pass)
+    #[serde(skip)]
+    causal_mask: LayerCacheParam<Array2<f32>>,
 
     // Cache for backward pass (using LayerCacheParam for interior mutability in forward)
     #[serde(skip)]
@@ -82,6 +88,7 @@ impl MultiHeadAttentionLayer {
             use_casual_mask: false,
             dropout_rate,
             training: false,
+            causal_mask: LayerCacheParam::new(format!("{}::cached_causal_mask", name)),
             last_attention_weights: LayerCacheParam::new(format!(
                 "{}::last_attention_weights",
                 name
@@ -110,9 +117,25 @@ impl MultiHeadAttentionLayer {
         }
     }
 
-    fn causal_mask(&self, shape: (usize, usize)) -> Array2<f32> {
-        // TODO: Pre-compute based on max sequence length and return a view based on input length.
-        Array2::from_shape_fn(shape, |(i, j)| if j <= i { 0.0 } else { f32::NEG_INFINITY })
+    fn get_causal_mask(&self, seq_len: usize) -> Array2<f32> {
+        let mut cache = self.causal_mask.mut_ref();
+
+        // Lazily initialize the mask on first use
+        if cache.is_none() {
+            *cache = Some(Array2::from_shape_fn(
+                (SEQUENCE_LENGTH, SEQUENCE_LENGTH),
+                |(i, j)| {
+                    if j <= i { 0.0 } else { f32::NEG_INFINITY }
+                },
+            ));
+        }
+
+        // Return a slice of the cached mask for the current sequence length
+        cache
+            .as_ref()
+            .unwrap()
+            .slice(s![..seq_len, ..seq_len])
+            .to_owned()
     }
 }
 
@@ -127,7 +150,7 @@ impl Layer for MultiHeadAttentionLayer {
     fn forward(&self, input: &Self::Input) -> Self::Output {
         let (batch_size, seq_len, _embed_dim) = input.dim();
 
-        // Compute queries, keys, and values (now handles 3D automatically)
+        // Compute queries, keys, and values using linear projections
         let queries_3d = self.query_weights.forward(input);
         let keys_3d = self.key_weights.forward(input);
         let values_3d = self.value_weights.forward(input);
@@ -164,71 +187,83 @@ impl Layer for MultiHeadAttentionLayer {
             )));
         }
 
-        let mut output = Array3::<f32>::zeros((batch_size, seq_len, self.dim_out));
-        let mut attention_weights_all = if self.training {
-            Some(Array4::<f32>::zeros((
-                batch_size,
-                self.num_heads,
-                seq_len,
-                seq_len,
-            )))
-        } else {
-            None
-        };
+        // Batched attention computation - much faster than nested loops
+        // Reshape to (batch*heads, seq, head_dim) for batched matmul
+        let batch_heads = batch_size * self.num_heads;
+        let queries_reshaped = queries.to_shape((batch_heads, seq_len, head_dim)).unwrap();
+        let keys_reshaped = keys.to_shape((batch_heads, seq_len, head_dim)).unwrap();
+        let values_reshaped = values.to_shape((batch_heads, seq_len, head_dim)).unwrap();
 
-        // TODO: Optimize by using linalg libraries for efficient batched matrix multiplications.
-        for batch in 0..batch_size {
-            for head in 0..self.num_heads {
-                // // Get the queries, keys, and values for the current batch and head
-                let head_queries = queries.slice(s![batch, head, .., ..]); // (seq_len, head_dim)
-                let head_keys = keys.slice(s![batch, head, .., ..]); // (seq_len, head_dim)
-                let head_values = values.slice(s![batch, head, .., ..]); // (seq_len, head_dim)
+        // Compute attention scores for all batches and heads at once
+        // Q @ K^T for each of the batch*head matrices
+        let mut attention_scores = Array3::<f32>::zeros((batch_heads, seq_len, seq_len));
+        for i in 0..batch_heads {
+            let q = queries_reshaped.slice(s![i, .., ..]);
 
-                let attention_scores = head_queries.dot(&head_keys.t());
+            let k = keys_reshaped.slice(s![i, .., ..]);
 
-                let attention_scores = if self.use_casual_mask {
-                    attention_scores + self.causal_mask((seq_len, seq_len))
-                } else {
-                    attention_scores
-                };
+            attention_scores
+                .slice_mut(s![i, .., ..])
+                .assign(&q.dot(&k.t()));
+        }
 
-                // Scale by sqrt(dk) to prevent large dot product values that can lead to vanishing gradients
-                let dk = head_keys.ncols() as f32;
-                let mut attention_weights = attention_scores.mapv(|x| x / dk.sqrt());
+        // Apply causal mask if needed
+        if self.use_casual_mask {
+            let mask = self.get_causal_mask(seq_len);
 
-                // Normalize weights with softmax
-                attention_weights.softmax(0, None);
+            // Apply the mask to each batch_head attention score matrix
+            for i in 0..batch_heads {
+                let mut current = attention_scores.slice_mut(s![i, .., ..]);
 
-                // Apply dropout to attention weights (training only)
-                if self.training {
-                    attention_weights.apply_dropout(self.dropout_rate);
-                }
-
-                if self.training {
-                    attention_weights_all
-                        .as_mut()
-                        // Safe unwrap since we are in training mode
-                        .unwrap()
-                        .slice_mut(s![batch, head, .., ..])
-                        .assign(&attention_weights);
-                }
-
-                let context_vectors = attention_weights.dot(&head_values);
-
-                // Determine the slice indices for this head in the output.
-                // This is needed since we will go back from 4D to 3D by concatenating the head outputs.
-                let start_idx = head * head_dim;
-                let end_idx = start_idx + head_dim;
-
-                // Add this head's context vectors to this batch's output
-                output
-                    .slice_mut(s![batch, .., start_idx..end_idx])
-                    .assign(&context_vectors);
+                current += &mask;
             }
         }
 
+        // Scale by sqrt(dk)
+        let dk = head_dim as f32;
+        attention_scores.mapv_inplace(|x| x / dk.sqrt());
+
+        // Apply softmax to each (seq_len, seq_len) matrix
+        for i in 0..batch_heads {
+            let mut attn_matrix = attention_scores.slice(s![i, .., ..]).to_owned();
+            attn_matrix.softmax(0, None);
+            attention_scores
+                .slice_mut(s![i, .., ..])
+                .assign(&attn_matrix);
+        }
+
+        // Apply dropout (training only)
         if self.training {
-            *self.last_attention_weights.mut_ref() = attention_weights_all;
+            attention_scores.apply_dropout(self.dropout_rate);
+        }
+
+        // Compute context vectors: attention_weights @ V
+        let mut context = Array3::<f32>::zeros((batch_heads, seq_len, head_dim));
+        for i in 0..batch_heads {
+            let attn = attention_scores.slice(s![i, .., ..]);
+            let v = values_reshaped.slice(s![i, .., ..]);
+            context.slice_mut(s![i, .., ..]).assign(&attn.dot(&v));
+        }
+
+        // Reshape back to (batch, heads, seq, head_dim) then (batch, seq, heads, head_dim)
+        let context_4d = context
+            .to_shape((batch_size, self.num_heads, seq_len, head_dim))
+            .unwrap();
+        let context_reordered = context_4d.permuted_axes([0, 2, 1, 3]);
+
+        // Reshape to (batch, seq, dim_out) to concatenate heads
+        let output = context_reordered
+            .to_shape((batch_size, seq_len, self.dim_out))
+            .unwrap()
+            .to_owned();
+
+        // Cache attention weights for backward pass if training
+        if self.training {
+            let attention_weights_all = attention_scores
+                .to_shape((batch_size, self.num_heads, seq_len, seq_len))
+                .unwrap()
+                .to_owned();
+            *self.last_attention_weights.mut_ref() = Some(attention_weights_all);
         }
 
         output
@@ -339,12 +374,13 @@ impl Layer for MultiHeadAttentionLayer {
         Ok(grad_input)
     }
 
-    fn set_train(&mut self) {
+    fn set_train(&mut self, metrics_handle: TrainingMetricsHandle) {
         self.training = true;
+
         // Set training mode for linear layers
-        self.query_weights.set_train();
-        self.key_weights.set_train();
-        self.value_weights.set_train();
+        self.query_weights.set_train(metrics_handle.clone());
+        self.key_weights.set_train(metrics_handle.clone());
+        self.value_weights.set_train(metrics_handle.clone());
     }
 
     fn set_eval(&mut self) {

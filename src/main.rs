@@ -3,6 +3,7 @@ mod data;
 mod errors;
 mod layers;
 mod loss;
+mod metrics;
 mod model;
 mod params;
 mod tokenizer;
@@ -39,7 +40,7 @@ fn main() {
     let seed = None;
     let mut model = model::CrabformerModel::new(vocab_size, seed).expect("Failed to create model");
     model
-        .train(&mut data_loader, 1, 0.001)
+        .train(&mut data_loader, 1)
         .expect("Failed to train model");
 
     let batch = data_loader

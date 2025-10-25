@@ -9,6 +9,7 @@ use crate::{
         activation::{GELU, gelu_derivative},
         xavier_initialized_array,
     },
+    metrics::TrainingMetricsHandle,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -133,7 +134,7 @@ impl Layer for LinearLayer {
             .to_owned())
     }
 
-    fn set_train(&mut self) {
+    fn set_train(&mut self, _metrics_handle: TrainingMetricsHandle) {
         self.training = true;
     }
 
@@ -242,10 +243,10 @@ impl Layer for FeedForwardLayer {
         Ok(grad_input)
     }
 
-    fn set_train(&mut self) {
+    fn set_train(&mut self, metrics_handle: TrainingMetricsHandle) {
         self.training = true;
-        self.linear1.set_train();
-        self.linear2.set_train();
+        self.linear1.set_train(metrics_handle.clone());
+        self.linear2.set_train(metrics_handle.clone());
     }
 
     fn set_eval(&mut self) {
