@@ -5,12 +5,16 @@ use crate::{
 use ndarray::{Axis, s};
 
 use ndarray::{Array2, Array3};
+use serde::{Deserialize, Serialize};
 
+#[derive(Serialize, Deserialize)]
 pub struct EmbeddingLayer {
     pub weights: Array2<f32>,
     // pub gradients: Array2<f32>,
     // Cache input tokens for backward pass
+    #[serde(skip)]
     weight_grad: LayerCacheParam<Array2<f32>>,
+    #[serde(skip)]
     last_input_tokens: LayerCacheParam<Array2<u32>>,
     training: bool,
 

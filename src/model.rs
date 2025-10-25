@@ -1,59 +1,53 @@
 use ndarray::{Array2, Array3, s};
 use rand::distr::{Distribution, weighted::WeightedIndex};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     adamw::{self, AdamWOptimizer, ParamHandle},
     data::{Batch, DataLoader},
     errors::ModelError,
     layers::{
-        Layer, Layer3Df32, LayerCacheParam, ZeroGrad, dropout::Dropout, embedding::EmbeddingLayer,
-        linear::LinearLayer, normalization::Softmax, transformer_block::TransformerBlock,
+        dropout::Dropout, embedding::EmbeddingLayer, linear::LinearLayer, normalization::{LayerNormLayer, Softmax}, transformer_block::TransformerBlock, Layer, Layer3Df32, LayerCacheParam, ZeroGrad
     },
     params::{
-        ADAMW_BETA1, ADAMW_BETA2, ADAMW_EPSILON, ATTENTION_HEADS, BATCH_SIZE, DROPOUT_RATE,
-        EMBED_DIMENSION, FF_HIDDEN_DIMENSION, GLOBAL_RNG, LEARNING_RATE, SEQUENCE_LENGTH,
-        TEMPERATURE, TRANSFORMER_BLOCKS, WEIGHT_DECAY,
+        ADAMW_BETA1, ADAMW_BETA2, ADAMW_EPSILON, ATTENTION_HEADS, BATCH_SIZE, CHECKPOINTS_DIR, DROPOUT_RATE, EMBED_DIMENSION, FF_HIDDEN_DIMENSION, GLOBAL_RNG, LEARNING_RATE, SEQUENCE_LENGTH, TEMPERATURE, TRANSFORMER_BLOCKS, WEIGHT_DECAY
     },
 };
 
+#[derive(Serialize, Deserialize)]
 pub struct CrabformerModel {
     token_embedding_layer: EmbeddingLayer,
     position_embedding_layer: EmbeddingLayer,
-    layers: Vec<Box<Layer3Df32>>,
+    transformer_layers: Vec<TransformerBlock>,
+    final_layer_norm: LayerNormLayer,
     // Final layer to project to vocabulary size (no weight tying to reuse input embeddings layer)
     output_layer: LinearLayer,
 
     // Training mode flag
     training: bool,
     // Cache for backward pass
+    #[serde(skip)]
     last_embeddings: LayerCacheParam<Array3<f32>>,
+    #[serde(skip)]
     last_positions: LayerCacheParam<Array2<u32>>,
+    #[serde(skip)]
     adamw_optimizer: Option<AdamWOptimizer>,
 }
 
 impl CrabformerModel {
     pub fn new(vocab_size: usize, seed: Option<u64>) -> Result<Self, ModelError> {
-        let transformer_block = |i: usize| -> Result<Box<TransformerBlock>, ModelError> {
-            let name = format!("TransformerBlock_{}", i);
-            let block = TransformerBlock::new(
-                EMBED_DIMENSION,
-                ATTENTION_HEADS,     // num_heads
-                FF_HIDDEN_DIMENSION, // dim_ff
-                DROPOUT_RATE,
-                Some(name),
-            )?;
-            Ok(Box::new(block))
-        };
-
-        let mut layers: Vec<_> = (0..TRANSFORMER_BLOCKS)
-            .map(|i| transformer_block(i).map(|b| b as Box<Layer3Df32>))
-            .collect::<Result<Vec<Box<Layer3Df32>>, ModelError>>()?;
-
-        // Add final layer norm
-        layers.push(Box::new(crate::layers::normalization::LayerNormLayer::new(
-            EMBED_DIMENSION,
-            Some("FinalLayerNorm".into()),
-        )));
+        let transformer_layers: Vec<_> = (0..TRANSFORMER_BLOCKS)
+            .map(|i| {
+                let name = format!("TransformerBlock_{}", i);
+                TransformerBlock::new(
+                    EMBED_DIMENSION,
+                    ATTENTION_HEADS,
+                    FF_HIDDEN_DIMENSION,
+                    DROPOUT_RATE,
+                    Some(name),
+                )
+            })
+            .collect::<Result<Vec<TransformerBlock>, ModelError>>()?;
 
         Ok(Self {
             token_embedding_layer: EmbeddingLayer::new(
@@ -66,7 +60,11 @@ impl CrabformerModel {
                 EMBED_DIMENSION,
                 Some("PositionEmbeddingLayer".into()),
             ),
-            layers,
+            transformer_layers,
+            final_layer_norm: crate::layers::normalization::LayerNormLayer::new(
+                EMBED_DIMENSION,
+                Some("FinalLayerNorm".into()),
+            ),
             output_layer: LinearLayer::new(EMBED_DIMENSION, vocab_size, Some("OutputLayer".into())),
 
             training: false,
@@ -127,9 +125,11 @@ impl CrabformerModel {
         }
 
         let mut output = token_embedding_output;
-        for layer in &self.layers {
+        for layer in &self.transformer_layers {
             output = layer.forward(&output);
         }
+
+        output = self.final_layer_norm.forward(&output);
 
         // Final output layer to get logits for each token in the vocabulary
         output = self.output_layer.forward(&output);
@@ -159,9 +159,11 @@ impl CrabformerModel {
         *self.last_positions.mut_ref() = Some(positions);
 
         let mut output = token_embedding_output;
-        for layer in &mut self.layers {
+        for layer in &mut self.transformer_layers {
             output = layer.forward(&output);
         }
+
+        output = self.final_layer_norm.forward(&output);
 
         // Final output layer to get logits for each token in the vocabulary
         output = self.output_layer.forward(&output);
@@ -180,8 +182,11 @@ impl CrabformerModel {
         // Backprop through output layer
         let mut grad = self.output_layer.backward(grad_output)?;
 
+        // Backprop through final layer norm
+        grad = self.final_layer_norm.backward(&grad)?;
+
         // Backprop through transformer layers in reverse
-        for layer in self.layers.iter_mut().rev() {
+        for layer in self.transformer_layers.iter_mut().rev() {
             grad = layer.backward(&grad)?;
         }
 
@@ -200,7 +205,7 @@ impl CrabformerModel {
     /// Set model to training mode
     fn set_training(&mut self, training: bool) {
         self.training = training;
-        for layer in &mut self.layers {
+        for layer in &mut self.transformer_layers {
             if training {
                 layer.set_train();
             } else {
@@ -212,10 +217,12 @@ impl CrabformerModel {
         if training {
             self.token_embedding_layer.set_train();
             self.position_embedding_layer.set_train();
+            self.final_layer_norm.set_train();
             self.output_layer.set_train();
         } else {
             self.token_embedding_layer.set_eval();
             self.position_embedding_layer.set_eval();
+            self.final_layer_norm.set_eval();
             self.output_layer.set_eval();
         }
     }
@@ -224,28 +231,20 @@ impl CrabformerModel {
     pub fn zero_grad(&mut self) {
         self.token_embedding_layer.zero_grad();
         self.position_embedding_layer.zero_grad();
+        self.final_layer_norm.zero_grad();
         self.output_layer.zero_grad();
 
         // Zero grad for transformer blocks
-        for layer in &mut self.layers {
+        for layer in &mut self.transformer_layers {
             layer.zero_grad();
         }
     }
 
     /// Training loop
-    ///
-    /// # Arguments
-    /// * `data_loader` - DataLoader providing training batches
-    /// * `num_epochs` - Number of epochs to train
-    /// * `learning_rate` - Learning rate for optimizer
-    ///
-    /// # Returns
-    /// Result indicating success or error
     pub fn train(
         &mut self,
         data_loader: &mut DataLoader,
         num_epochs: usize,
-        learning_rate: f32,
     ) -> Result<(), ModelError> {
         use crate::loss::{cross_entropy_loss, cross_entropy_loss_backward};
 
@@ -256,6 +255,7 @@ impl CrabformerModel {
             let mut num_batches = 0;
 
             // Reset data loader for new epoch
+            // TODO
             // data_loader.reset();
 
             while let Some(batch) = data_loader
@@ -288,14 +288,18 @@ impl CrabformerModel {
                     ));
                 };
 
-                // TODO: Integrate AdamW optimizer
                 let mut params: Vec<ParamHandle> = self
                     .token_embedding_layer
                     .get_params()
                     .into_iter()
                     .chain(self.position_embedding_layer.get_params())
+                    .chain(self.final_layer_norm.get_params())
                     .chain(self.output_layer.get_params())
-                    .chain(self.layers.iter_mut().flat_map(|layer| layer.get_params()))
+                    .chain(
+                        self.transformer_layers
+                            .iter_mut()
+                            .flat_map(|layer| layer.get_params()),
+                    )
                     .collect();
 
                 optimizer.step(&mut params);
@@ -303,6 +307,9 @@ impl CrabformerModel {
                 if num_batches % 10 == 0 {
                     println!("Epoch {}, Batch {}, Loss: {:.4}", epoch, num_batches, loss);
                 }
+
+                if 
+
             }
 
             let avg_loss = total_loss / num_batches as f32;
@@ -310,6 +317,15 @@ impl CrabformerModel {
         }
 
         self.set_training(false);
+        Ok(())
+    }
+
+    fn save_weights(&self) -> Result<(), ModelError> {
+        let serialized = postcard::to_vec(self)
+            .map_err(|e| ModelError::SerializationError(format!("Serialization failed: {}", e)))?;
+
+        std::fs::write(CHECKPOINTS_DIR, serialized)
+            .map_err(|e| ModelError::IOError(format!("Failed to write model to file: {}", e)))?;
         Ok(())
     }
 }

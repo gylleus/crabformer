@@ -1,4 +1,5 @@
 use ndarray::{Array, Array1, Array3, Axis, RemoveAxis};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     errors::ModelError,
@@ -29,15 +30,20 @@ where
 
 /// Normalizes the input across the last dimension using Layer Normalization to achieve zero mean and unit variance.
 /// Formula: output = scale * (input - mean) / sqrt(var + epsilon) + shift
+#[derive(Serialize, Deserialize)]
 pub struct LayerNormLayer {
     // Learnable parameters for the layer to tweak the normalization result
     pub scale: Array1<f32>,
     pub shift: Array1<f32>,
+
     // Gradients for learnable parameters
+    #[serde(skip)]
     scale_grad: LayerCacheParam<Array1<f32>>,
+    #[serde(skip)]
     shift_grad: LayerCacheParam<Array1<f32>>,
-    // Cache for backward pass
+    #[serde(skip)]
     last_input: LayerCacheParam<Array3<f32>>,
+    #[serde(skip)]
     last_normalized: LayerCacheParam<Array3<f32>>,
     training: bool,
     name: String,

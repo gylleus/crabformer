@@ -4,7 +4,11 @@ use once_cell::sync::Lazy;
 use parking_lot::Mutex;
 use rand::{SeedableRng, rngs::StdRng};
 
+pub const CHECKPOINTS_DIR: &str = "checkpoints";
+
 pub const BATCH_SIZE: usize = 16;
+pub const SAVE_EVERY_N_STEPS: usize = 50;
+
 pub const TEMPERATURE: f32 = 0.9;
 
 /// Dimension of the hidden layer in the feed-forward layers for the transformer blocks.

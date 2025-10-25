@@ -1,6 +1,7 @@
 use std::fmt::format;
 
 use ndarray::Array3;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     errors::ModelError,
@@ -10,6 +11,7 @@ use crate::{
     },
 };
 
+#[derive(Serialize, Deserialize)]
 pub struct TransformerBlock {
     pub self_attention: MultiHeadAttentionLayer,
     pub feed_forward: FeedForwardLayer,

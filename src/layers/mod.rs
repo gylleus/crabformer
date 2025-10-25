@@ -2,6 +2,7 @@ use parking_lot::RwLock;
 
 use ndarray::{Array, Array2, Array3, Data};
 use rand::{Rng, RngCore, TryRngCore, rngs::StdRng};
+use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{adamw::ParamHandle, errors::ModelError, params::GLOBAL_RNG};
 
@@ -27,7 +28,7 @@ pub fn xavier_initialized_array(fan_in: usize, fan_out: usize) -> Array2<f32> {
 /// Type alias for layers that take 3D f32 arrays as input and output
 pub type Layer3Df32 = dyn Layer<Input = Array3<f32>, Output = Array3<f32>>;
 
-pub trait Layer: ZeroGrad {
+pub trait Layer: ZeroGrad + Serialize + DeserializeOwned {
     type Input;
     type Output;
 
@@ -73,6 +74,13 @@ pub struct LayerCacheParam<T> {
     pub data: RwLock<Option<T>>,
     pub id: ParamKey,
     name: String,
+}
+
+/// This default implementation allows deserializing LayerCacheParam in layers
+impl<T> Default for LayerCacheParam<T> {
+    fn default() -> Self {
+        Self::new("None".into())
+    }
 }
 
 impl<T> LayerCacheParam<T> {

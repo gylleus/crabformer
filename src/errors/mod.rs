@@ -18,4 +18,8 @@ pub enum ModelError {
     DataError(#[from] DataError),
     #[error("Optimizer error: {0}")]
     OptimizerError(String),
+    #[error("Serialization error: {0}")]
+    SerializationError(String),
+    #[error("I/O error: {0}")]
+    IOError(String),
 }

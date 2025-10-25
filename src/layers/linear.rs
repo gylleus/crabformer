@@ -1,4 +1,5 @@
 use ndarray::{Array1, Array2, Array3, ArrayBase, Data, Ix2};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     adamw,
@@ -10,14 +11,18 @@ use crate::{
     },
 };
 
+#[derive(Serialize, Deserialize)]
 /// Wrapper struct around 2D linear layer to provide 3D data interface
 pub struct LinearLayer {
     // linear: LinearLayer2D,
     pub weights: Array2<f32>,
     pub bias: Option<Array1<f32>>,
 
+    #[serde(skip)]
     weight_grad: LayerCacheParam<Array2<f32>>,
+    #[serde(skip)]
     bias_grad: LayerCacheParam<Array1<f32>>,
+    #[serde(skip)]
     last_input: LayerCacheParam<Array3<f32>>,
 
     training: bool,
@@ -167,9 +172,13 @@ impl ZeroGrad for LinearLayer {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+/// Feed-Forward Layer with two linear transformations and GELU activation
 pub struct FeedForwardLayer {
     pub linear1: LinearLayer,
     pub linear2: LinearLayer,
+
+    #[serde(skip)]
     // Cache for backward pass (stores hidden state before GELU activation)
     last_hidden: LayerCacheParam<Array3<f32>>,
     training: bool,

@@ -8,6 +8,7 @@ use std::{
 
 use ndarray::{Array2, Array3, Array4, Axis, s};
 use rand::{SeedableRng, rngs::StdRng};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     errors::ModelError,
@@ -17,6 +18,7 @@ use crate::{
     },
 };
 
+#[derive(Serialize, Deserialize)]
 pub struct MultiHeadAttentionLayer {
     pub query_weights: LinearLayer,
     pub key_weights: LinearLayer,
@@ -31,10 +33,15 @@ pub struct MultiHeadAttentionLayer {
     training: bool,
 
     // Cache for backward pass (using LayerCacheParam for interior mutability in forward)
+    #[serde(skip)]
     last_input: LayerCacheParam<Array3<f32>>,
+    #[serde(skip)]
     last_queries: LayerCacheParam<Array4<f32>>,
+    #[serde(skip)]
     last_keys: LayerCacheParam<Array4<f32>>,
+    #[serde(skip)]
     last_values: LayerCacheParam<Array4<f32>>,
+    #[serde(skip)]
     last_attention_weights: LayerCacheParam<Array4<f32>>,
 
     name: String,
