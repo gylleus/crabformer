@@ -142,43 +142,27 @@ impl Layer for LayerNormLayer {
             }
         }
 
-        // Gradient w.r.t. scale: sum over batch and sequence dimensions
+        // Gradient w.r.t. scale: sum over batch and sequence dimensions (vectorized)
         // d_scale = sum(grad_output * normalized)
         {
             let mut guard = self.scale_grad.mut_ref();
             let sg = guard.as_mut().unwrap();
-            for b in 0..batch_size {
-                for s in 0..seq_len {
-                    for d in 0..dim {
-                        sg[d] += grad_output[[b, s, d]] * normalized[[b, s, d]];
-                    }
-                }
-            }
+            // Vectorized: sum across batch and sequence axes
+            *sg = &*sg + &(grad_output * &*normalized).sum_axis(Axis(0)).sum_axis(Axis(0));
         }
 
-        // Gradient w.r.t. shift: sum over batch and sequence dimensions
+        // Gradient w.r.t. shift: sum over batch and sequence dimensions (vectorized)
         // d_shift = sum(grad_output)
         {
             let mut guard = self.shift_grad.mut_ref();
             let shift_g = guard.as_mut().unwrap();
-            for b in 0..batch_size {
-                for s in 0..seq_len {
-                    for d in 0..dim {
-                        shift_g[d] += grad_output[[b, s, d]];
-                    }
-                }
-            }
+            // Vectorized: sum across batch and sequence axes
+            *shift_g = &*shift_g + &grad_output.sum_axis(Axis(0)).sum_axis(Axis(0));
         }
 
-        // Gradient w.r.t. normalized input
-        let mut grad_normalized = Array3::zeros((batch_size, seq_len, dim));
-        for b in 0..batch_size {
-            for s in 0..seq_len {
-                for d in 0..dim {
-                    grad_normalized[[b, s, d]] = grad_output[[b, s, d]] * self.scale[d];
-                }
-            }
-        }
+        // Gradient w.r.t. normalized input (vectorized)
+        // Broadcasting: grad_output * scale across the last dimension
+        let grad_normalized = grad_output * &self.scale;
 
         // Gradient w.r.t. input (backprop through normalization)
         let mut grad_input = Array3::zeros((batch_size, seq_len, dim));

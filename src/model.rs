@@ -48,7 +48,7 @@ pub struct CrabformerModel {
 }
 
 impl CrabformerModel {
-    pub fn new(vocab_size: usize, seed: Option<u64>) -> Result<Self, ModelError> {
+    pub fn new(vocab_size: usize) -> Result<Self, ModelError> {
         let transformer_layers: Vec<_> = (0..TRANSFORMER_BLOCKS)
             .map(|i| {
                 let name = format!("TransformerBlock_{}", i);
@@ -368,7 +368,7 @@ impl CrabformerModel {
                     metrics.current_loss = loss;
 
                     // Display metrics
-                    println!("Metrics: {:?}", metrics);
+                    // println!("Metrics: {:?}", metrics);
 
                     // Reset durations for next batch
                     metrics.reset_durations();

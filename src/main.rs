@@ -37,8 +37,7 @@ fn main() {
     let tokenizer = ByteTokenizer;
     let vocab_size = tokenizer.vocab_size();
 
-    let seed = None;
-    let mut model = model::CrabformerModel::new(vocab_size, seed).expect("Failed to create model");
+    let mut model = model::CrabformerModel::new(vocab_size).expect("Failed to create model");
     model
         .train(&mut data_loader, 1)
         .expect("Failed to train model");

@@ -6,8 +6,9 @@ use std::{
     },
 };
 
-use ndarray::{Array2, Array3, Array4, Axis, s};
+use ndarray::{Array2, Array3, Array4, s};
 use rand::{SeedableRng, rngs::StdRng};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -117,6 +118,8 @@ impl MultiHeadAttentionLayer {
         }
     }
 
+    /// Generates (or retrieves cached) causal mask for given sequence length.
+    /// This mask will be added to the attention scores to prevent attending to future tokens.
     fn get_causal_mask(&self, seq_len: usize) -> Array2<f32> {
         let mut cache = self.causal_mask.mut_ref();
 
@@ -125,6 +128,7 @@ impl MultiHeadAttentionLayer {
             *cache = Some(Array2::from_shape_fn(
                 (SEQUENCE_LENGTH, SEQUENCE_LENGTH),
                 |(i, j)| {
+                    // Allowed positions remain unchanged, blocked future positions get -inf
                     if j <= i { 0.0 } else { f32::NEG_INFINITY }
                 },
             ));
@@ -190,21 +194,26 @@ impl Layer for MultiHeadAttentionLayer {
         // Batched attention computation - much faster than nested loops
         // Reshape to (batch*heads, seq, head_dim) for batched matmul
         let batch_heads = batch_size * self.num_heads;
-        let queries_reshaped = queries.to_shape((batch_heads, seq_len, head_dim)).unwrap();
-        let keys_reshaped = keys.to_shape((batch_heads, seq_len, head_dim)).unwrap();
-        let values_reshaped = values.to_shape((batch_heads, seq_len, head_dim)).unwrap();
+        let batch_heads_dim_3d = (batch_heads, seq_len, head_dim);
 
-        // Compute attention scores for all batches and heads at once
+        let queries_reshaped = queries.to_shape(batch_heads_dim_3d).unwrap();
+        let keys_reshaped = keys.to_shape(batch_heads_dim_3d).unwrap();
+        let values_reshaped = values.to_shape(batch_heads_dim_3d).unwrap();
+
+        // Compute attention scores for all batches and heads at once (parallelized)
         // Q @ K^T for each of the batch*head matrices
+        let attention_scores_vec: Vec<Array2<f32>> = (0..batch_heads)
+            .into_par_iter()
+            .map(|i| {
+                let queries_i = queries_reshaped.slice(s![i, .., ..]);
+                let keys_i = keys_reshaped.slice(s![i, .., ..]);
+                queries_i.dot(&keys_i.t())
+            })
+            .collect();
+
         let mut attention_scores = Array3::<f32>::zeros((batch_heads, seq_len, seq_len));
-        for i in 0..batch_heads {
-            let q = queries_reshaped.slice(s![i, .., ..]);
-
-            let k = keys_reshaped.slice(s![i, .., ..]);
-
-            attention_scores
-                .slice_mut(s![i, .., ..])
-                .assign(&q.dot(&k.t()));
+        for (i, scores) in attention_scores_vec.into_iter().enumerate() {
+            attention_scores.slice_mut(s![i, .., ..]).assign(&scores);
         }
 
         // Apply causal mask if needed
@@ -219,17 +228,22 @@ impl Layer for MultiHeadAttentionLayer {
             }
         }
 
-        // Scale by sqrt(dk)
+        // Scale by sqrt(dk) for stability
         let dk = head_dim as f32;
         attention_scores.mapv_inplace(|x| x / dk.sqrt());
 
-        // Apply softmax to each (seq_len, seq_len) matrix
-        for i in 0..batch_heads {
-            let mut attn_matrix = attention_scores.slice(s![i, .., ..]).to_owned();
-            attn_matrix.softmax(0, None);
-            attention_scores
-                .slice_mut(s![i, .., ..])
-                .assign(&attn_matrix);
+        // Apply softmax to each (seq_len, seq_len) matrix (parallelized)
+        let softmax_results: Vec<Array2<f32>> = (0..batch_heads)
+            .into_par_iter()
+            .map(|i| {
+                let mut attn_matrix = attention_scores.slice(s![i, .., ..]).to_owned();
+                attn_matrix.softmax(0, None);
+                attn_matrix
+            })
+            .collect();
+
+        for (i, result) in softmax_results.into_iter().enumerate() {
+            attention_scores.slice_mut(s![i, .., ..]).assign(&result);
         }
 
         // Apply dropout (training only)
@@ -237,12 +251,19 @@ impl Layer for MultiHeadAttentionLayer {
             attention_scores.apply_dropout(self.dropout_rate);
         }
 
-        // Compute context vectors: attention_weights @ V
+        // Compute context vectors: attention_weights @ V (parallelized)
+        let context_vec: Vec<Array2<f32>> = (0..batch_heads)
+            .into_par_iter()
+            .map(|i| {
+                let attn = attention_scores.slice(s![i, .., ..]);
+                let v = values_reshaped.slice(s![i, .., ..]);
+                attn.dot(&v)
+            })
+            .collect();
+
         let mut context = Array3::<f32>::zeros((batch_heads, seq_len, head_dim));
-        for i in 0..batch_heads {
-            let attn = attention_scores.slice(s![i, .., ..]);
-            let v = values_reshaped.slice(s![i, .., ..]);
-            context.slice_mut(s![i, .., ..]).assign(&attn.dot(&v));
+        for (i, ctx) in context_vec.into_iter().enumerate() {
+            context.slice_mut(s![i, .., ..]).assign(&ctx);
         }
 
         // Reshape back to (batch, heads, seq, head_dim) then (batch, seq, heads, head_dim)
@@ -284,9 +305,14 @@ impl Layer for MultiHeadAttentionLayer {
         let mut grad_keys = Array4::<f32>::zeros(keys.dim());
         let mut grad_values = Array4::<f32>::zeros(values.dim());
 
-        // Backprop through each head
-        for batch in 0..batch_size {
-            for head in 0..self.num_heads {
+        // Backprop through each head (parallelized across batch*heads)
+        let batch_heads = batch_size * self.num_heads;
+        let grad_results: Vec<(usize, usize, Array2<f32>, Array2<f32>, Array2<f32>)> = (0..batch_heads)
+            .into_par_iter()
+            .map(|idx| {
+                let batch = idx / self.num_heads;
+                let head = idx % self.num_heads;
+
                 // Get gradient for this head's output
                 let start_idx = head * head_dim;
                 let end_idx = start_idx + head_dim;
@@ -299,29 +325,20 @@ impl Layer for MultiHeadAttentionLayer {
                 let head_keys = keys.slice(s![batch, head, .., ..]);
 
                 // Gradient w.r.t. attention_weights @ V
-                // grad_attn_weights = grad_output @ V^T
                 let grad_attn_weights = grad_head_output.dot(&head_values.t());
 
                 // Gradient w.r.t. V: attn_weights^T @ grad_output
                 let grad_v = attn_weights.t().dot(&grad_head_output);
-                grad_values
-                    .slice_mut(s![batch, head, .., ..])
-                    .assign(&grad_v);
 
                 // Backprop through dropout (approximation: just pass through)
                 let mut grad_attn_after_dropout = grad_attn_weights.clone();
 
                 // Backprop through softmax
-                // For softmax applied per row: dy/dx_ij = softmax_ij * (grad_ij - sum_k(grad_ik * softmax_ik))
-                // We need to compute the sum per row, not globally
                 for i in 0..seq_len {
-                    // Compute sum for this row
                     let mut sum_grad_row = 0.0;
                     for j in 0..seq_len {
                         sum_grad_row += grad_attn_after_dropout[[i, j]] * attn_weights[[i, j]];
                     }
-
-                    // Apply gradient formula for this row
                     for j in 0..seq_len {
                         grad_attn_after_dropout[[i, j]] =
                             attn_weights[[i, j]] * (grad_attn_after_dropout[[i, j]] - sum_grad_row);
@@ -333,16 +350,18 @@ impl Layer for MultiHeadAttentionLayer {
                 let grad_attn_scores = grad_attn_after_dropout.mapv(|x| x / dk.sqrt());
 
                 // Backprop through Q @ K^T
-                // grad_Q = grad_scores @ K
                 let grad_q = grad_attn_scores.dot(&head_keys);
-                grad_queries
-                    .slice_mut(s![batch, head, .., ..])
-                    .assign(&grad_q);
-
-                // grad_K = grad_scores^T @ Q
                 let grad_k = grad_attn_scores.t().dot(&head_queries);
-                grad_keys.slice_mut(s![batch, head, .., ..]).assign(&grad_k);
-            }
+
+                (batch, head, grad_q, grad_k, grad_v)
+            })
+            .collect();
+
+        // Assign results back to gradient arrays
+        for (batch, head, grad_q, grad_k, grad_v) in grad_results {
+            grad_queries.slice_mut(s![batch, head, .., ..]).assign(&grad_q);
+            grad_keys.slice_mut(s![batch, head, .., ..]).assign(&grad_k);
+            grad_values.slice_mut(s![batch, head, .., ..]).assign(&grad_v);
         }
 
         // Reshape gradients back: (batch, num_heads, seq, head_dim) -> (batch, seq, dim_out)

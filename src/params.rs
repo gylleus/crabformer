@@ -13,18 +13,18 @@ pub const TEMPERATURE: f32 = 0.9;
 
 /// Dimension of the hidden layer in the feed-forward layers for the transformer blocks.
 pub const FF_HIDDEN_DIMENSION: usize = 128;
-pub const ATTENTION_HEADS: usize = 4;
-pub const TRANSFORMER_BLOCKS: usize = 4;
+pub const ATTENTION_HEADS: usize = 8;
+pub const TRANSFORMER_BLOCKS: usize = 8;
 /// The length of each training sequence (T tokens).
-pub const SEQUENCE_LENGTH: usize = 64;
-pub const EMBED_DIMENSION: usize = 32;
+pub const SEQUENCE_LENGTH: usize = 128;
+pub const EMBED_DIMENSION: usize = 64;
 
 /// The size of the data ring buffer used for training. A larger size improves batch shuffling.
 pub const RING_BUFFER_SIZE: usize = 16 * SEQUENCE_LENGTH;
 /// The number of new tokens to add to the ring buffer after reading each batch.
 pub const RING_BUFFER_ADVANCE: usize = SEQUENCE_LENGTH;
 
-pub const QKV_BIAS: bool = false;
+pub const QKV_BIAS: bool = true;
 pub const DROPOUT_RATE: f32 = 0.1;
 
 pub const LEARNING_RATE: f32 = 0.001;

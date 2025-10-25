@@ -13,6 +13,7 @@ use crate::{
         multi_head_attention::MultiHeadAttentionLayer, normalization::LayerNormLayer,
     },
     metrics::TrainingMetricsHandle,
+    params::QKV_BIAS,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -48,7 +49,14 @@ impl TransformerBlock {
             num_heads,
             dropout_rate,
             Some(format!("{}::self_attention", name)),
-        )?;
+        )?
+        .with_casual_mask();
+
+        let attention_layer = if QKV_BIAS {
+            attention_layer.with_qkv_bias()
+        } else {
+            attention_layer
+        };
 
         Ok(Self {
             self_attention: attention_layer,
