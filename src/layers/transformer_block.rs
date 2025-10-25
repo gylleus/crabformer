@@ -127,10 +127,10 @@ impl Layer for TransformerBlock {
                 //     .forward_duration += start_time.elapsed();
 
                 let mut metrics = metrics_handle.lock();
-                metrics.attention_duration.forward_duration += attention_duration;
-                metrics.layer_norm_duration.forward_duration += total_norm_duration;
-                metrics.feed_forward_duration.forward_duration += ff_duration;
-                metrics.transformer_block_duration.forward_duration += start_time.elapsed();
+                metrics.attention_duration.add_forward(attention_duration);
+                metrics.layer_norm_duration.add_forward(total_norm_duration);
+                metrics.feed_forward_duration.add_forward(ff_duration);
+                metrics.transformer_block_duration.add_forward(start_time.elapsed());
             }
         }
 
@@ -189,10 +189,10 @@ impl Layer for TransformerBlock {
         if let Some(metrics_handle) = &self.metrics_handle {
             let mut metrics = metrics_handle.lock();
 
-            metrics.attention_duration.backward_duration += attention_duration;
-            metrics.layer_norm_duration.backward_duration += total_norm_duration;
-            metrics.feed_forward_duration.backward_duration += ff_duration;
-            metrics.transformer_block_duration.backward_duration += start_time.elapsed();
+            metrics.attention_duration.add_backward(attention_duration);
+            metrics.layer_norm_duration.add_backward(total_norm_duration);
+            metrics.feed_forward_duration.add_backward(ff_duration);
+            metrics.transformer_block_duration.add_backward(start_time.elapsed());
         }
 
         Ok(grad_input)

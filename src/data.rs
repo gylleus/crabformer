@@ -2,12 +2,12 @@ use ndarray::Array2;
 use rand::{Rng, SeedableRng, rngs::StdRng};
 use std::{
     fs::File,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read},
 };
 
 use crate::{
     errors::DataError,
-    params::{GLOBAL_RNG, RING_BUFFER_SIZE, SEQUENCE_LENGTH},
+    params::{GLOBAL_RNG, RING_BUFFER_ADVANCE, RING_BUFFER_SIZE, SEQUENCE_LENGTH},
 };
 
 pub struct Batch {
@@ -18,6 +18,8 @@ pub struct Batch {
 pub struct DataLoader {
     shuffler: RingShuffler<TokenStream>,
     batch_size: usize,
+    total_batches: usize,
+    files: Vec<String>,
 }
 
 impl DataLoader {
@@ -26,25 +28,50 @@ impl DataLoader {
         batch_size: usize,
         seed: Option<u64>,
     ) -> Result<Self, DataError> {
-        let token_stream = TokenStream::new(files);
+        let total_batches = count_total_batches(&files, batch_size)?;
+        let total_tokens = count_total_tokens(&files)?;
+        let token_stream = TokenStream::new(files.clone());
 
         let mut shuffler = RingShuffler::new(
             token_stream,
             RING_BUFFER_SIZE,
             SEQUENCE_LENGTH,
-            SEQUENCE_LENGTH,
-            seed,
+            RING_BUFFER_ADVANCE,  // Use the configured advance amount
+            total_tokens,
         );
         shuffler.warmup()?;
+
         Ok(Self {
             shuffler,
             batch_size,
+            total_batches,
+            files,
         })
     }
 
     /// Produce the next batch. `Ok(None)` means the underlying stream hit EOF.
     pub fn next_batch(&mut self) -> Result<Option<Batch>, DataError> {
         self.shuffler.next_batch(self.batch_size)
+    }
+
+    pub fn total_batches(&self) -> usize {
+        self.total_batches
+    }
+
+    pub fn reset(&mut self) -> Result<(), DataError> {
+        let total_tokens = count_total_tokens(&self.files)?;
+        let token_stream = TokenStream::new(self.files.clone());
+
+        let mut shuffler = RingShuffler::new(
+            token_stream,
+            RING_BUFFER_SIZE,
+            SEQUENCE_LENGTH,
+            RING_BUFFER_ADVANCE,  // Use the configured advance amount
+            total_tokens,
+        );
+        shuffler.warmup()?;
+        self.shuffler = shuffler;
+        Ok(())
     }
 }
 
@@ -65,13 +92,16 @@ where
 
     stream: S,
     exhausted: bool,
+    tokens_consumed: usize,  // Total tokens read from stream
+    max_tokens: usize,       // Stop after consuming this many tokens
+    batch_count: usize,      // Track batches for debug output
 }
 
 impl<S> RingShuffler<S>
 where
     S: Iterator<Item = Result<u32, DataError>>,
 {
-    fn new(stream: S, cap: usize, t: usize, advance: usize, seed: Option<u64>) -> Self {
+    fn new(stream: S, cap: usize, t: usize, advance: usize, max_tokens: usize) -> Self {
         assert!(cap >= t + 1, "ring capacity must be >= T+1");
         Self {
             ring: vec![0; cap],
@@ -83,6 +113,9 @@ where
 
             stream,
             exhausted: false,
+            tokens_consumed: 0,
+            max_tokens,
+            batch_count: 0,
         }
     }
 
@@ -92,17 +125,20 @@ where
             let tok = self.next_token()?;
             self.ring[self.head] = tok;
             self.head = (self.head + 1) % self.cap;
+            self.tokens_consumed += 1;
         }
         self.filled = true;
         Ok(())
     }
 
-    /// Produce the next batch. `Ok(None)` means the underlying stream hit EOF.
+    /// Produce the next batch. `Ok(None)` means the underlying stream hit EOF or max tokens reached.
     fn next_batch(&mut self, batch_size: usize) -> Result<Option<Batch>, DataError> {
         if !self.filled {
             return Err(DataError::Io("call warmup() before next_batch".into()));
         }
-        if self.exhausted {
+        if self.exhausted || self.tokens_consumed >= self.max_tokens {
+            eprintln!("[DataLoader] Stopping: exhausted={}, tokens_consumed={}, max_tokens={}",
+                     self.exhausted, self.tokens_consumed, self.max_tokens);
             return Ok(None);
         }
 
@@ -124,19 +160,39 @@ where
         }
 
         // advance ring with fresh tokens
+        let mut tokens_advanced = 0;
         for _ in 0..self.advance {
+            // Stop if we've already consumed all tokens
+            if self.tokens_consumed >= self.max_tokens {
+                eprintln!("[RingShuffler] Hit max_tokens limit: consumed={}, max={}",
+                         self.tokens_consumed, self.max_tokens);
+                self.exhausted = true;
+                break;
+            }
+
             match self.stream.next() {
                 Some(Ok(tok)) => {
                     self.ring[self.head] = tok;
                     self.head = (self.head + 1) % self.cap;
+                    self.tokens_consumed += 1;
+                    tokens_advanced += 1;
                 }
                 Some(Err(e)) => return Err(e),
                 None => {
                     // EOF: mark exhausted; still return the batch we just built
+                    eprintln!("[RingShuffler] Hit EOF: consumed={}, max={}",
+                             self.tokens_consumed, self.max_tokens);
                     self.exhausted = true;
                     break;
                 }
             }
+        }
+
+        // Debug output every 100 batches
+        self.batch_count += 1;
+        if self.batch_count % 100 == 0 {
+            eprintln!("[RingShuffler] Batch {}: tokens_consumed={}/{}, advanced={}",
+                     self.batch_count, self.tokens_consumed, self.max_tokens, tokens_advanced);
         }
 
         Ok(Some(Batch { x, y }))
@@ -216,4 +272,32 @@ impl Iterator for TokenStream {
             return Some(Ok(next as u32));
         }
     }
+}
+
+fn count_total_tokens(data_files: &Vec<String>) -> Result<usize, DataError> {
+    let mut total_tokens = 0usize;
+
+    for file_path in data_files {
+        let file = File::open(&file_path).map_err(|e| DataError::FileError(e.to_string()))?;
+        let file_length = file
+            .metadata()
+            .map_err(|e| DataError::FileError(e.to_string()))?
+            .len();
+
+        total_tokens += file_length as usize;
+    }
+
+    Ok(total_tokens)
+}
+
+fn count_total_batches(data_files: &Vec<String>, batch_size: usize) -> Result<usize, DataError> {
+    let total_tokens = count_total_tokens(data_files)?;
+
+    // With ring shuffler: we advance by RING_BUFFER_ADVANCE tokens per batch
+    // After warmup, remaining tokens divided by advance per batch gives us batch count
+    let remaining_after_warmup = total_tokens.saturating_sub(RING_BUFFER_SIZE);
+    let advance_per_batch = RING_BUFFER_ADVANCE;
+    let total_batches = remaining_after_warmup / advance_per_batch;
+
+    Ok(total_batches)
 }

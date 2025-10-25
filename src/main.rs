@@ -1,4 +1,5 @@
 mod adamw;
+mod dashboard;
 mod data;
 mod errors;
 mod layers;

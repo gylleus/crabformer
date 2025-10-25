@@ -1,17 +1,16 @@
 use std::{sync::Arc, time::Instant};
 
-use clap::builder::StringValueParser;
 use ndarray::{Array2, Array3, s};
 use parking_lot::Mutex;
 use rand::distr::{Distribution, weighted::WeightedIndex};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    adamw::{self, AdamWOptimizer, ParamHandle},
+    adamw::{AdamWOptimizer, ParamHandle},
     data::{Batch, DataLoader},
     errors::ModelError,
     layers::{
-        Layer, Layer3Df32, LayerCacheParam, ZeroGrad,
+        Layer, LayerCacheParam, ZeroGrad,
         dropout::Dropout,
         embedding::EmbeddingLayer,
         linear::LinearLayer,
@@ -21,9 +20,9 @@ use crate::{
     loss::{cross_entropy_loss, cross_entropy_loss_backward},
     metrics::{TrainingMetrics, TrainingMetricsHandle},
     params::{
-        ADAMW_BETA1, ADAMW_BETA2, ADAMW_EPSILON, ATTENTION_HEADS, BATCH_SIZE, CHECKPOINTS_DIR,
-        DROPOUT_RATE, EMBED_DIMENSION, FF_HIDDEN_DIMENSION, GLOBAL_RNG, LEARNING_RATE,
-        SAVE_EVERY_N_STEPS, SEQUENCE_LENGTH, TEMPERATURE, TRANSFORMER_BLOCKS, WEIGHT_DECAY,
+        ADAMW_BETA1, ADAMW_BETA2, ADAMW_EPSILON, ATTENTION_HEADS, CHECKPOINTS_DIR, DROPOUT_RATE,
+        EMBED_DIMENSION, FF_HIDDEN_DIMENSION, GLOBAL_RNG, LEARNING_RATE, SAVE_EVERY_N_STEPS,
+        SEQUENCE_LENGTH, TEMPERATURE, TRANSFORMER_BLOCKS, WEIGHT_DECAY,
     },
 };
 
@@ -193,9 +192,13 @@ impl CrabformerModel {
 
         {
             let mut metrics = metrics_handle.lock();
-            metrics.token_embedding_duration.forward_duration += token_embedding_duration;
-            metrics.positional_embedding_duration.forward_duration += position_embedding_duration;
-            metrics.output_layer_duration.forward_duration += output_duration;
+            metrics
+                .token_embedding_duration
+                .add_forward(token_embedding_duration);
+            metrics
+                .positional_embedding_duration
+                .add_forward(position_embedding_duration);
+            metrics.output_layer_duration.add_forward(output_duration);
         }
 
         output
@@ -242,9 +245,13 @@ impl CrabformerModel {
         {
             let mut metrics = metrics_handle.lock();
 
-            metrics.token_embedding_duration.backward_duration += token_embedding_duration;
-            metrics.positional_embedding_duration.backward_duration += position_embedding_duration;
-            metrics.output_layer_duration.backward_duration += output_duration;
+            metrics
+                .token_embedding_duration
+                .add_backward(token_embedding_duration);
+            metrics
+                .positional_embedding_duration
+                .add_backward(position_embedding_duration);
+            metrics.output_layer_duration.add_backward(output_duration);
         }
 
         Ok(())
@@ -295,18 +302,21 @@ impl CrabformerModel {
         data_loader: &mut DataLoader,
         num_epochs: usize,
     ) -> Result<(), ModelError> {
-        let metrics = TrainingMetrics::new();
+        let batches_per_epoch = data_loader.total_batches();
+
+        let metrics = TrainingMetrics::new(num_epochs, batches_per_epoch);
         let metrics_handle = Arc::new(Mutex::new(metrics));
 
         self.set_training(true, metrics_handle.clone());
 
+        // Start dashboard in a separate thread
+        let (dashboard_should_quit, dashboard_handle) =
+            crate::dashboard::start_dashboard(metrics_handle.clone());
+
         for epoch in 0..num_epochs {
-            let mut total_loss = 0.0;
             let mut num_batches = 0;
 
-            // Reset data loader for new epoch
-            // TODO
-            // data_loader.reset();
+            data_loader.reset()?;
 
             while let Some(batch) = data_loader
                 .next_batch()
@@ -320,7 +330,6 @@ impl CrabformerModel {
 
                 // Compute loss
                 let loss = cross_entropy_loss(&logits, &batch.y);
-                total_loss += loss;
                 num_batches += 1;
 
                 // Compute gradients
@@ -336,6 +345,7 @@ impl CrabformerModel {
                     ));
                 };
 
+                // Get all model parameters to optimize from layers
                 let mut params: Vec<ParamHandle> = self
                     .token_embedding_layer
                     .get_params()
@@ -350,35 +360,38 @@ impl CrabformerModel {
                     )
                     .collect();
 
+                // Perform optimization step on model parameters
                 optimizer.step(&mut params);
 
                 // Update training metrics
-
-                if num_batches % 10 == 0 {
-                    println!("Epoch {}, Batch {}, Loss: {:.4}", epoch, num_batches, loss);
+                {
+                    let mut metrics = metrics_handle.lock();
+                    metrics.processed_batches += 1;
+                    let batch_num = metrics.processed_batches;
+                    metrics.loss_history.push((batch_num, loss));
                 }
 
                 if num_batches % SAVE_EVERY_N_STEPS == 0 {
                     self.save_weights(epoch, num_batches)?;
                 }
-
-                {
-                    let mut metrics = metrics_handle.lock();
-                    metrics.processed_batches += 1;
-                    metrics.current_loss = loss;
-
-                    // Display metrics
-                    // println!("Metrics: {:?}", metrics);
-
-                    // Reset durations for next batch
-                    metrics.reset_durations();
-                }
             }
 
-            let avg_loss = total_loss / num_batches as f32;
-            println!("Epoch {} completed. Average loss: {:.4}", epoch, avg_loss);
+            // Update current epoch in metrics
+            {
+                let mut metrics = metrics_handle.lock();
+                metrics.current_epoch = epoch + 1;
+            }
         }
 
+        // Stop dashboard thread
+        *dashboard_should_quit.lock() = true;
+        // Wait for dashboard thread to properly exit
+        dashboard_handle.join().unwrap();
+
+        println!(
+            "Training complete!\nCheckpoints saved to '{}'",
+            CHECKPOINTS_DIR
+        );
         Ok(())
     }
 
@@ -398,11 +411,6 @@ impl CrabformerModel {
 
         std::fs::write(file_name, serialized)
             .map_err(|e| ModelError::IOError(format!("Failed to write model to file: {}", e)))?;
-
-        println!(
-            "Model weights saved to {}/model_epoch_{}_{}.ron",
-            CHECKPOINTS_DIR, epoch, step
-        );
 
         Ok(())
     }
