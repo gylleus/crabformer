@@ -43,6 +43,8 @@ pub struct CrabformerModel {
     #[serde(skip)]
     last_positions: LayerCacheParam<Array2<u32>>,
     #[serde(skip)]
+    embedding_dropout_mask: LayerCacheParam<Vec<bool>>,
+    #[serde(skip)]
     adamw_optimizer: Option<AdamWOptimizer>,
 }
 
@@ -77,7 +79,7 @@ impl CrabformerModel {
                 EMBED_DIMENSION,
                 Some("FinalLayerNorm".into()),
             ),
-            output_layer: LinearLayer::new(EMBED_DIMENSION, vocab_size, Some("OutputLayer".into())),
+            output_layer: LinearLayer::new(EMBED_DIMENSION, vocab_size, Some("OutputLayer".into())).with_bias(),
 
             training: false,
             adamw_optimizer: Some(AdamWOptimizer::new(
@@ -89,6 +91,7 @@ impl CrabformerModel {
             )),
             last_embeddings: LayerCacheParam::new("CrabformerModel::last_embeddings".to_string()),
             last_positions: LayerCacheParam::new("CrabformerModel::last_positions".to_string()),
+            embedding_dropout_mask: LayerCacheParam::new("CrabformerModel::embedding_dropout_mask".to_string()),
         })
     }
 
@@ -171,8 +174,9 @@ impl CrabformerModel {
 
         token_embedding_output += &position_embedding_output;
 
-        // Apply dropout to embeddings
-        token_embedding_output.apply_dropout(DROPOUT_RATE);
+        // Apply dropout to embeddings and save mask
+        let dropout_mask = token_embedding_output.apply_dropout(DROPOUT_RATE);
+        *self.embedding_dropout_mask.mut_ref() = dropout_mask;
 
         // Cache for backward pass
         *self.last_embeddings.mut_ref() = Some(token_embedding_output.clone());
@@ -229,7 +233,10 @@ impl CrabformerModel {
             grad = layer.backward(&grad)?;
         }
 
-        // Backprop through dropout (approximation: pass through)
+        // Backprop through dropout - apply the same mask from forward pass
+        if let Some(ref mask) = *self.embedding_dropout_mask.mut_ref() {
+            grad.apply_dropout_backward(mask, DROPOUT_RATE);
+        }
 
         // Backprop through position embeddings
         let position_embedding_start = Instant::now();
@@ -359,6 +366,53 @@ impl CrabformerModel {
                             .flat_map(|layer| layer.get_params()),
                     )
                     .collect();
+
+                // Compute total gradient norm
+                let total_grad_norm: f32 = params
+                    .iter()
+                    .map(|p| match p {
+                        ParamHandle::Array1 { grad, .. } => grad
+                            .mut_ref()
+                            .as_ref()
+                            .map_or(0.0, |g| g.mapv(|x| x * x).sum()),
+                        ParamHandle::Array2 { grad, .. } => grad
+                            .mut_ref()
+                            .as_ref()
+                            .map_or(0.0, |g| g.mapv(|x| x * x).sum()),
+                    })
+                    .sum::<f32>()
+                    .sqrt();
+
+                // Gradient clipping
+                let clip_norm = crate::params::GRADIENT_CLIP_NORM;
+                if total_grad_norm > clip_norm {
+                    let scale = clip_norm / total_grad_norm;
+                    for param in params.iter_mut() {
+                        match param {
+                            ParamHandle::Array1 { grad, .. } => {
+                                if let Some(g) = grad.mut_ref().as_mut() {
+                                    g.mapv_inplace(|x| x * scale);
+                                }
+                            }
+                            ParamHandle::Array2 { grad, .. } => {
+                                if let Some(g) = grad.mut_ref().as_mut() {
+                                    g.mapv_inplace(|x| x * scale);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Debug: Log gradient magnitudes periodically
+                if num_batches % 10 == 0 {
+                    eprintln!(
+                        "Batch {}: loss={:.4}, grad_norm={:.6}, clipped={}",
+                        num_batches,
+                        loss,
+                        total_grad_norm,
+                        total_grad_norm > clip_norm
+                    );
+                }
 
                 // Perform optimization step on model parameters
                 optimizer.step(&mut params);

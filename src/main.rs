@@ -17,7 +17,7 @@ use crate::{
         Layer, embedding::EmbeddingLayer, multi_head_attention::MultiHeadAttentionLayer,
         normalization::Softmax,
     },
-    params::{BATCH_SIZE, EMBED_DIMENSION, SEQUENCE_LENGTH},
+    params::{BATCH_SIZE, EMBED_DIMENSION, NUM_EPOCHS, SEQUENCE_LENGTH},
     tokenizer::ByteTokenizer,
 };
 
@@ -33,24 +33,20 @@ fn main() {
 
     println!("Using data file: {}", args.data_file.join(", "));
     let mut data_loader =
-        data::DataLoader::new(args.data_file, BATCH_SIZE, None).expect("Failed to load data");
+        data::DataLoader::new(args.data_file, BATCH_SIZE).expect("Failed to load data");
 
     let tokenizer = ByteTokenizer;
     let vocab_size = tokenizer.vocab_size();
 
     let mut model = model::CrabformerModel::new(vocab_size).expect("Failed to create model");
     model
-        .train(&mut data_loader, 1)
+        .train(&mut data_loader, NUM_EPOCHS)
         .expect("Failed to train model");
 
     let batch = data_loader
         .next_batch()
         .expect("no data")
         .expect("batch is None");
-    // let res = model.forward_batch(&batch);
-    // let next_tokens = model.next_token_batch(&batch);
-
-    // println!("Model output: {:?}", next_tokens);
 
     let mut output = model.forward_batch(&batch);
 

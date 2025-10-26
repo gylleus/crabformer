@@ -31,6 +31,12 @@ pub struct TransformerBlock {
 
     #[serde(skip)]
     metrics_handle: Option<TrainingMetricsHandle>,
+
+    // Cache dropout masks for backward pass
+    #[serde(skip)]
+    attention_dropout_mask: LayerCacheParam<Vec<bool>>,
+    #[serde(skip)]
+    ff_dropout_mask: LayerCacheParam<Vec<bool>>,
 }
 
 impl TransformerBlock {
@@ -72,8 +78,10 @@ impl TransformerBlock {
             ),
             dropout_rate,
             training: false,
-            name,
+            name: name.clone(),
             metrics_handle: None,
+            attention_dropout_mask: LayerCacheParam::new(format!("{}::attention_dropout_mask", name)),
+            ff_dropout_mask: LayerCacheParam::new(format!("{}::ff_dropout_mask", name)),
         })
     }
 }
@@ -101,7 +109,8 @@ impl Layer for TransformerBlock {
 
         // Apply dropout after attention (only during training)
         if self.training {
-            attention_output.apply_dropout(self.dropout_rate);
+            let mask = attention_output.apply_dropout(self.dropout_rate);
+            *self.attention_dropout_mask.mut_ref() = mask;
         }
 
         // Residual connection (skip connection)
@@ -119,7 +128,8 @@ impl Layer for TransformerBlock {
 
         // Apply dropout after feed-forward (only during training)
         if self.training {
-            feed_forward_output.apply_dropout(self.dropout_rate);
+            let mask = feed_forward_output.apply_dropout(self.dropout_rate);
+            *self.ff_dropout_mask.mut_ref() = mask;
             if let Some(metrics_handle) = &self.metrics_handle {
                 // metrics_handle
                 //     .lock()
@@ -150,15 +160,16 @@ impl Layer for TransformerBlock {
         // Backprop through second residual connection
         // output = attention_output + feed_forward_output
         // So gradients flow to both paths
-        let grad_ff_output = grad.clone();
+        let mut grad_ff_output = grad.clone();
         let grad_attention_after_residual = grad.clone();
 
-        // Backprop through dropout (approximation: just pass through)
-        // In training, dropout zeros out some values, but we'll approximate by passing through
+        // Backprop through dropout for feed-forward
+        if let Some(ref mask) = *self.ff_dropout_mask.mut_ref() {
+            grad_ff_output.apply_dropout_backward(mask, self.dropout_rate);
+        }
 
         // Backprop through feed-forward layer
         let ff_start = Instant::now();
-
         let grad_from_ff = self.feed_forward.backward(&grad_ff_output)?;
         let ff_duration = ff_start.elapsed();
 
@@ -168,9 +179,12 @@ impl Layer for TransformerBlock {
         total_norm_duration += norm_start.elapsed();
 
         // Combine gradients from both residual paths
-        let grad_attention_total = &grad_attention_from_norm + &grad_attention_after_residual;
+        let mut grad_attention_total = &grad_attention_from_norm + &grad_attention_after_residual;
 
-        // Backprop through dropout after attention (approximation: pass through)
+        // Backprop through dropout after attention
+        if let Some(ref mask) = *self.attention_dropout_mask.mut_ref() {
+            grad_attention_total.apply_dropout_backward(mask, self.dropout_rate);
+        }
 
         // Backprop through self-attention
         let attention_start = Instant::now();
@@ -183,7 +197,9 @@ impl Layer for TransformerBlock {
         total_norm_duration += norm_start.elapsed();
 
         // Combine gradients from both residual paths
-        let grad_input = grad_input_from_norm + &grad_attention_total;
+        // grad_input_from_norm: gradient through layer_norm and attention
+        // grad_attention_after_residual: gradient through the skip connection
+        let grad_input = grad_input_from_norm + &grad_attention_after_residual;
 
         // Update metrics
         if let Some(metrics_handle) = &self.metrics_handle {

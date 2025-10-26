@@ -103,7 +103,7 @@ impl Layer for LayerNormLayer {
 
                 // Compute mean and variance across features for this token
                 let mean = feature_vector.mean().unwrap_or(0.0);
-                let var = feature_vector.var(0.0);
+                let var = feature_vector.mapv(|x| (x - mean).powi(2)).mean().unwrap_or(0.0);
                 let std = (var + Self::EPSILON).sqrt();
 
                 // Normalize: (x - mean) / std
@@ -174,7 +174,7 @@ impl Layer for LayerNormLayer {
                 let grad_norm_vec = grad_normalized.slice(ndarray::s![b, s, ..]);
 
                 let mean = feature_vec.mean().unwrap_or(0.0);
-                let var = feature_vec.var(0.0);
+                let var = feature_vec.mapv(|x| (x - mean).powi(2)).mean().unwrap_or(0.0);
                 let std = (var + Self::EPSILON).sqrt();
 
                 let n = dim as f32;

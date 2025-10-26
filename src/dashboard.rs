@@ -33,6 +33,28 @@ const CRAB_ICON: &str = r#"
  ████████████▓▒▒░░▒▓▓░ ░▒█▒░░░▒▒████████████ 
 "#;
 
+// const CRAB_ICON_2: &str = r#"
+                                             
+//              ███████ ▓ ▒ ███████             
+//            ███   █░███████ █   ███           
+//          ███░ ▒█▓█▒  █▓█  ░███▒ ░███         
+//         ██ ░░░     ▒██ ██▒     ░░░░██        
+//        █▓░ ░░  ▒████     ████▒   ░ ░▓█       
+//       ██ ▒▓░████             ████░▒▒ ██      
+//       █▓ ▒██▒    ███     ███    ▒██▒ ▓█      
+//       ▒░   ▒█▒ █    █████    █  █▒   ░█      
+//   ▓██████   ▓███ ██ ▓   ▓ ██ ▓██▓   ███████  
+//  ██░░█   ▓█▓▒  ░▒░░▒▒   ▒▒▒░▒░  ▒▒██   █░░██ 
+//  ██▓ █▒██                           ██▒█ █▓█ 
+//  ███     ░░░░  ░░░░░░░░░░░░░░░  ░░░░     █▓█ 
+//   ▓▒▒████████▓░░░░░░░░░░░░░░░░░▓████████▒▒█  
+//   ███  ▓▒     ░▒▒▒░░░░░░░░░▒▒▒░     ▒▓  ███  
+//    █  █▒▒▓█▓██▓▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▓██▓██▒░█  █   
+//      ██▒█ █ ▒███████████████████▒ █ █▒██     
+//       ███ █░▓      █ ▓ ░ █      ▓░█ ███▒     
+//            ████                ███           
+// "#;
+
 // const CRAB_ICON: &str = r#"
 //                   ░
 //            ██████░          ██████
@@ -272,6 +294,24 @@ impl Dashboard {
 
         let max_batch = loss_history.last().map(|(b, _)| *b as f64).unwrap_or(1.0);
 
+        // Create X-axis labels
+        let x_labels = vec![
+            format!("0"),
+            format!("{:.0}", max_batch / 2.0),
+            format!("{:.0}", max_batch),
+        ];
+        let x_labels_str: Vec<&str> = x_labels.iter().map(|s| s.as_str()).collect();
+
+        // Create Y-axis labels
+        let y_min = (min_loss * 0.9) as f64;
+        let y_max = (max_loss * 1.1) as f64;
+        let y_labels = vec![
+            format!("{:.4}", y_min),
+            format!("{:.4}", (y_min + y_max) / 2.0),
+            format!("{:.4}", y_max),
+        ];
+        let y_labels_str: Vec<&str> = y_labels.iter().map(|s| s.as_str()).collect();
+
         let chart = Chart::new(vec![dataset])
             .block(
                 Block::default()
@@ -282,13 +322,15 @@ impl Dashboard {
                 Axis::default()
                     .title("Batch")
                     .style(Style::default().fg(Color::Gray))
-                    .bounds([0.0, max_batch]),
+                    .bounds([0.0, max_batch])
+                    .labels(x_labels_str),
             )
             .y_axis(
                 Axis::default()
                     .title("Loss")
                     .style(Style::default().fg(Color::Gray))
-                    .bounds([(min_loss * 0.9) as f64, (max_loss * 1.1) as f64]),
+                    .bounds([y_min, y_max])
+                    .labels(y_labels_str),
             );
 
         f.render_widget(chart, area);
@@ -475,7 +517,7 @@ impl Dashboard {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Average Compute Durations (total per layer type)"),
+                    .title("Average Compute Durations per Layer Instance"),
             )
             .style(Style::default().fg(Color::White));
 

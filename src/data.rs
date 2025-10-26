@@ -23,12 +23,8 @@ pub struct DataLoader {
 }
 
 impl DataLoader {
-    pub fn new(
-        files: Vec<String>,
-        batch_size: usize,
-        seed: Option<u64>,
-    ) -> Result<Self, DataError> {
-        let total_batches = count_total_batches(&files, batch_size)?;
+    pub fn new(files: Vec<String>, batch_size: usize) -> Result<Self, DataError> {
+        let total_batches = count_total_batches(&files)?;
         let total_tokens = count_total_tokens(&files)?;
         let token_stream = TokenStream::new(files.clone());
 
@@ -36,7 +32,7 @@ impl DataLoader {
             token_stream,
             RING_BUFFER_SIZE,
             SEQUENCE_LENGTH,
-            RING_BUFFER_ADVANCE,  // Use the configured advance amount
+            RING_BUFFER_ADVANCE, // Use the configured advance amount
             total_tokens,
         );
         shuffler.warmup()?;
@@ -66,7 +62,7 @@ impl DataLoader {
             token_stream,
             RING_BUFFER_SIZE,
             SEQUENCE_LENGTH,
-            RING_BUFFER_ADVANCE,  // Use the configured advance amount
+            RING_BUFFER_ADVANCE, // Use the configured advance amount
             total_tokens,
         );
         shuffler.warmup()?;
@@ -92,9 +88,8 @@ where
 
     stream: S,
     exhausted: bool,
-    tokens_consumed: usize,  // Total tokens read from stream
-    max_tokens: usize,       // Stop after consuming this many tokens
-    batch_count: usize,      // Track batches for debug output
+    tokens_consumed: usize, // Total tokens read from stream
+    max_tokens: usize,      // Stop after consuming this many tokens
 }
 
 impl<S> RingShuffler<S>
@@ -115,7 +110,6 @@ where
             exhausted: false,
             tokens_consumed: 0,
             max_tokens,
-            batch_count: 0,
         }
     }
 
@@ -137,8 +131,6 @@ where
             return Err(DataError::Io("call warmup() before next_batch".into()));
         }
         if self.exhausted || self.tokens_consumed >= self.max_tokens {
-            eprintln!("[DataLoader] Stopping: exhausted={}, tokens_consumed={}, max_tokens={}",
-                     self.exhausted, self.tokens_consumed, self.max_tokens);
             return Ok(None);
         }
 
@@ -164,8 +156,6 @@ where
         for _ in 0..self.advance {
             // Stop if we've already consumed all tokens
             if self.tokens_consumed >= self.max_tokens {
-                eprintln!("[RingShuffler] Hit max_tokens limit: consumed={}, max={}",
-                         self.tokens_consumed, self.max_tokens);
                 self.exhausted = true;
                 break;
             }
@@ -180,19 +170,10 @@ where
                 Some(Err(e)) => return Err(e),
                 None => {
                     // EOF: mark exhausted; still return the batch we just built
-                    eprintln!("[RingShuffler] Hit EOF: consumed={}, max={}",
-                             self.tokens_consumed, self.max_tokens);
                     self.exhausted = true;
                     break;
                 }
             }
-        }
-
-        // Debug output every 100 batches
-        self.batch_count += 1;
-        if self.batch_count % 100 == 0 {
-            eprintln!("[RingShuffler] Batch {}: tokens_consumed={}/{}, advanced={}",
-                     self.batch_count, self.tokens_consumed, self.max_tokens, tokens_advanced);
         }
 
         Ok(Some(Batch { x, y }))
@@ -290,7 +271,7 @@ fn count_total_tokens(data_files: &Vec<String>) -> Result<usize, DataError> {
     Ok(total_tokens)
 }
 
-fn count_total_batches(data_files: &Vec<String>, batch_size: usize) -> Result<usize, DataError> {
+fn count_total_batches(data_files: &Vec<String>) -> Result<usize, DataError> {
     let total_tokens = count_total_tokens(data_files)?;
 
     // With ring shuffler: we advance by RING_BUFFER_ADVANCE tokens per batch

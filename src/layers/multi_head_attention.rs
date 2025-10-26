@@ -50,6 +50,8 @@ pub struct MultiHeadAttentionLayer {
     last_values: LayerCacheParam<Array4<f32>>,
     #[serde(skip)]
     last_attention_weights: LayerCacheParam<Array4<f32>>,
+    #[serde(skip)]
+    attention_dropout_mask: LayerCacheParam<Vec<bool>>,
 
     name: String,
 }
@@ -98,6 +100,7 @@ impl MultiHeadAttentionLayer {
             last_keys: LayerCacheParam::new(format!("{}::last_keys", name)),
             last_queries: LayerCacheParam::new(format!("{}::last_queries", name)),
             last_input: LayerCacheParam::new(format!("{}::last_input", name)),
+            attention_dropout_mask: LayerCacheParam::new(format!("{}::attention_dropout_mask", name)),
             name,
         })
     }
@@ -246,9 +249,19 @@ impl Layer for MultiHeadAttentionLayer {
             attention_scores.slice_mut(s![i, .., ..]).assign(&result);
         }
 
+        // Cache attention weights BEFORE dropout for backward pass
+        if self.training {
+            let attention_weights_all = attention_scores
+                .to_shape((batch_size, self.num_heads, seq_len, seq_len))
+                .unwrap()
+                .to_owned();
+            *self.last_attention_weights.mut_ref() = Some(attention_weights_all);
+        }
+
         // Apply dropout (training only)
         if self.training {
-            attention_scores.apply_dropout(self.dropout_rate);
+            let mask = attention_scores.apply_dropout(self.dropout_rate);
+            *self.attention_dropout_mask.mut_ref() = mask;
         }
 
         // Compute context vectors: attention_weights @ V (parallelized)
@@ -278,15 +291,6 @@ impl Layer for MultiHeadAttentionLayer {
             .unwrap()
             .to_owned();
 
-        // Cache attention weights for backward pass if training
-        if self.training {
-            let attention_weights_all = attention_scores
-                .to_shape((batch_size, self.num_heads, seq_len, seq_len))
-                .unwrap()
-                .to_owned();
-            *self.last_attention_weights.mut_ref() = Some(attention_weights_all);
-        }
-
         output
     }
 
@@ -305,8 +309,14 @@ impl Layer for MultiHeadAttentionLayer {
         let mut grad_keys = Array4::<f32>::zeros(keys.dim());
         let mut grad_values = Array4::<f32>::zeros(values.dim());
 
+        // Get dropout mask if it exists (clone for parallel access)
+        let dropout_mask_opt = self.attention_dropout_mask.mut_ref().clone();
+
         // Backprop through each head (parallelized across batch*heads)
         let batch_heads = batch_size * self.num_heads;
+        let dropout_rate = self.dropout_rate;
+        let keep_prob = 1.0 - dropout_rate;
+
         let grad_results: Vec<(usize, usize, Array2<f32>, Array2<f32>, Array2<f32>)> = (0..batch_heads)
             .into_par_iter()
             .map(|idx| {
@@ -330,8 +340,22 @@ impl Layer for MultiHeadAttentionLayer {
                 // Gradient w.r.t. V: attn_weights^T @ grad_output
                 let grad_v = attn_weights.t().dot(&grad_head_output);
 
-                // Backprop through dropout (approximation: just pass through)
+                // Backprop through dropout - apply the same mask used in forward pass
                 let mut grad_attn_after_dropout = grad_attn_weights.clone();
+
+                if let Some(ref mask) = dropout_mask_opt {
+                    let offset = idx * seq_len * seq_len;
+                    for i in 0..seq_len {
+                        for j in 0..seq_len {
+                            let mask_idx = offset + i * seq_len + j;
+                            if !mask[mask_idx] {
+                                grad_attn_after_dropout[[i, j]] = 0.0;
+                            } else {
+                                grad_attn_after_dropout[[i, j]] /= keep_prob;
+                            }
+                        }
+                    }
+                }
 
                 // Backprop through softmax
                 for i in 0..seq_len {
