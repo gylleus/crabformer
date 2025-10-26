@@ -249,17 +249,15 @@ impl Layer for MultiHeadAttentionLayer {
             attention_scores.slice_mut(s![i, .., ..]).assign(&result);
         }
 
-        // Cache attention weights BEFORE dropout for backward pass
+        // Cache attention weights before dropout for backward pass
         if self.training {
             let attention_weights_all = attention_scores
                 .to_shape((batch_size, self.num_heads, seq_len, seq_len))
                 .unwrap()
                 .to_owned();
             *self.last_attention_weights.mut_ref() = Some(attention_weights_all);
-        }
-
-        // Apply dropout (training only)
-        if self.training {
+        
+            // Apply dropout to attention scores and save mask
             let mask = attention_scores.apply_dropout(self.dropout_rate);
             *self.attention_dropout_mask.mut_ref() = mask;
         }

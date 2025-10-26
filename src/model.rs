@@ -79,7 +79,8 @@ impl CrabformerModel {
                 EMBED_DIMENSION,
                 Some("FinalLayerNorm".into()),
             ),
-            output_layer: LinearLayer::new(EMBED_DIMENSION, vocab_size, Some("OutputLayer".into())).with_bias(),
+            output_layer: LinearLayer::new(EMBED_DIMENSION, vocab_size, Some("OutputLayer".into()))
+                .with_bias(),
 
             training: false,
             adamw_optimizer: Some(AdamWOptimizer::new(
@@ -91,7 +92,9 @@ impl CrabformerModel {
             )),
             last_embeddings: LayerCacheParam::new("CrabformerModel::last_embeddings".to_string()),
             last_positions: LayerCacheParam::new("CrabformerModel::last_positions".to_string()),
-            embedding_dropout_mask: LayerCacheParam::new("CrabformerModel::embedding_dropout_mask".to_string()),
+            embedding_dropout_mask: LayerCacheParam::new(
+                "CrabformerModel::embedding_dropout_mask".to_string(),
+            ),
         })
     }
 
@@ -320,8 +323,9 @@ impl CrabformerModel {
         let (dashboard_should_quit, dashboard_handle) =
             crate::dashboard::start_dashboard(metrics_handle.clone());
 
+        let mut total_steps = 0;
         for epoch in 0..num_epochs {
-            let mut num_batches = 0;
+            let mut step = 0;
 
             data_loader.reset()?;
 
@@ -337,7 +341,8 @@ impl CrabformerModel {
 
                 // Compute loss
                 let loss = cross_entropy_loss(&logits, &batch.y);
-                num_batches += 1;
+                step += 1;
+                total_steps += 1;
 
                 // Compute gradients
                 let grad_logits = cross_entropy_loss_backward(&logits, &batch.y);
@@ -403,17 +408,6 @@ impl CrabformerModel {
                     }
                 }
 
-                // Debug: Log gradient magnitudes periodically
-                if num_batches % 10 == 0 {
-                    eprintln!(
-                        "Batch {}: loss={:.4}, grad_norm={:.6}, clipped={}",
-                        num_batches,
-                        loss,
-                        total_grad_norm,
-                        total_grad_norm > clip_norm
-                    );
-                }
-
                 // Perform optimization step on model parameters
                 optimizer.step(&mut params);
 
@@ -425,8 +419,13 @@ impl CrabformerModel {
                     metrics.loss_history.push((batch_num, loss));
                 }
 
-                if num_batches % SAVE_EVERY_N_STEPS == 0 {
-                    self.save_weights(epoch, num_batches)?;
+                if total_steps % SAVE_EVERY_N_STEPS == 0 {
+                    let file_name = format!(
+                        "{}/checkpoint_epoch_{}_{}.ron",
+                        CHECKPOINTS_DIR, epoch, step
+                    );
+
+                    self.save_weights(&file_name)?;
                 }
             }
 
@@ -442,6 +441,11 @@ impl CrabformerModel {
         // Wait for dashboard thread to properly exit
         dashboard_handle.join().unwrap();
 
+        // Save final model weights
+        let file_name = format!("{}/model.ron", CHECKPOINTS_DIR);
+
+        self.save_weights(&file_name)?;
+
         println!(
             "Training complete!\nCheckpoints saved to '{}'",
             CHECKPOINTS_DIR
@@ -449,14 +453,9 @@ impl CrabformerModel {
         Ok(())
     }
 
-    fn save_weights(&self, epoch: usize, step: usize) -> Result<(), ModelError> {
+    fn save_weights(&self, file_name: &str) -> Result<(), ModelError> {
         let serialized = ron::to_string(self)
             .map_err(|e| ModelError::SerializationError(format!("Serialization failed: {}", e)))?;
-
-        let file_name = format!(
-            "{}/checkpoint_epoch_{}_{}.ron",
-            CHECKPOINTS_DIR, epoch, step
-        );
 
         // Ensure checkpoints directory exists
         std::fs::create_dir_all(CHECKPOINTS_DIR).map_err(|e| {
@@ -467,5 +466,23 @@ impl CrabformerModel {
             .map_err(|e| ModelError::IOError(format!("Failed to write model to file: {}", e)))?;
 
         Ok(())
+    }
+
+    pub fn load(checkpoint_path: String) -> Result<Self, ModelError> {
+        let data = std::fs::read_to_string(&checkpoint_path).map_err(|e| {
+            ModelError::IOError(format!(
+                "Failed to read checkpoint file '{}': {}",
+                checkpoint_path, e
+            ))
+        })?;
+
+        let model: CrabformerModel = ron::from_str(&data).map_err(|e| {
+            ModelError::SerializationError(format!(
+                "Failed to deserialize model from checkpoint: {}",
+                e
+            ))
+        })?;
+
+        Ok(model)
     }
 }
