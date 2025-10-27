@@ -12,73 +12,34 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     symbols,
-    widgets::{Axis, Block, Borders, Chart, Dataset, Gauge, List, ListItem, Paragraph},
+    widgets::{Axis, Block, Borders, Chart, Dataset, Gauge, GraphType, List, ListItem, Paragraph},
 };
 
 use crate::metrics::TrainingMetricsHandle;
 
-const CRAB_ICON: &str = r#"
-           ██████░          ██████           
-        ▓██▓     ████   ░███░    ████        
-       ██░    ███           ░██▓   ░██       
-     ██▓█▒████                  ████████     
-    ▒█ ▓██                         ███ ██    
-    ██▓█         ██▒      ██         ██▓█    
-    ▒█░▒██        ██     ██        ██▒ ██    
- ██▒  ███▓██  █████████████████░ ██▓▓██   ██ 
- ▒███░   ██████▒░░▒░     ░▓░ ░▓█████    ████ 
-   ▓███░   █▒░   ░▒▒░    ░▓░   ░░▓░   ████   
-      ██████░░  ░░▒▒░ ░  ▒▓░   ░░▓█████▒     
-          ░▓░░   ░░▒░    ▓▒░░  ░▒▓█          
- ████████████▓▒▒░░▒▓▓░ ░▒█▒░░░▒▒████████████ 
+const CRAB_ASCII: &str = r#"
+           ██████░          ██████
+        ▓██▓     ████   ░███░    ████
+       ██░    ███           ░██▓   ░██
+     ██▓█▒████                  ████████
+    ▒█ ▓██                         ███ ██
+    ██▓█         ██▒      ██         ██▓█
+    ▒█░▒██        ██     ██        ██▒ ██
+ ██▒  ███▓██  █████████████████░ ██▓▓██   ██
+ ▒███░   ██████▒░░▒░     ░▓░ ░▓█████    ████
+   ▓███░   █▒░   ░▒▒░    ░▓░   ░░▓░   ████
+      ██████░░  ░░▒▒░ ░  ▒▓░   ░░▓█████▒
+          ░▓░░   ░░▒░    ▓▒░░  ░▒▓█
+ ████████████▓▒▒░░▒▓▓░ ░▒█▒░░░▒▒████████████
+            ██▓▒▒▒▒▒▓▓▓▓▓▒░░░▒▒▓█
+     █████████████▒▒▒▒▒▒▒▒▒▒████████████
+   █████        ░██▓▓▒▒▒▒▓███        █████
+  ████    ▒█████▓███████████▓▓█████     ███▒
+  ▒     ░████▒▒▒             ░░░▓████
+       ███                         ░██
+      ███                           ▓██
+       █                             █░
 "#;
-
-// const CRAB_ICON_2: &str = r#"
-
-//              ███████ ▓ ▒ ███████
-//            ███   █░███████ █   ███
-//          ███░ ▒█▓█▒  █▓█  ░███▒ ░███
-//         ██ ░░░     ▒██ ██▒     ░░░░██
-//        █▓░ ░░  ▒████     ████▒   ░ ░▓█
-//       ██ ▒▓░████             ████░▒▒ ██
-//       █▓ ▒██▒    ███     ███    ▒██▒ ▓█
-//       ▒░   ▒█▒ █    █████    █  █▒   ░█
-//   ▓██████   ▓███ ██ ▓   ▓ ██ ▓██▓   ███████
-//  ██░░█   ▓█▓▒  ░▒░░▒▒   ▒▒▒░▒░  ▒▒██   █░░██
-//  ██▓ █▒██                           ██▒█ █▓█
-//  ███     ░░░░  ░░░░░░░░░░░░░░░  ░░░░     █▓█
-//   ▓▒▒████████▓░░░░░░░░░░░░░░░░░▓████████▒▒█
-//   ███  ▓▒     ░▒▒▒░░░░░░░░░▒▒▒░     ▒▓  ███
-//    █  █▒▒▓█▓██▓▒▒▒▒▒▒▒▒▒▒▒▒▒▒▒▓██▓██▒░█  █
-//      ██▒█ █ ▒███████████████████▒ █ █▒██
-//       ███ █░▓      █ ▓ ░ █      ▓░█ ███▒
-//            ████                ███
-// "#;
-
-// const CRAB_ICON: &str = r#"
-//                   ░
-//            ██████░          ██████
-//         ▓██▓     ████   ░███░    ████
-//        ██░    ███           ░██▓   ░██
-//      ██▓█▒████                  ████████
-//     ▒█ ▓██                         ███ ██
-//     ██▓█         ██▒      ██         ██▓█
-//     ▒█░▒██        ██     ██        ██▒ ██
-//  ██▒  ███▓██  █████████████████░ ██▓▓██   ██
-//  ▒███░   ██████▒░░▒░     ░▓░ ░▓█████    ████
-//    ▓███░   █▒░   ░▒▒░    ░▓░   ░░▓░   ████
-//       ██████░░  ░░▒▒░ ░  ▒▓░   ░░▓█████▒
-//           ░▓░░   ░░▒░    ▓▒░░  ░▒▓█
-//  ████████████▓▒▒░░▒▓▓░ ░▒█▒░░░▒▒████████████
-//             ██▓▒▒▒▒▒▓▓▓▓▓▒░░░▒▒▓█
-//      █████████████▒▒▒▒▒▒▒▒▒▒████████████
-//    █████        ░██▓▓▒▒▒▒▓███        █████
-//   ████    ▒█████▓███████████▓▓█████     ███▒
-//   ▒     ░████▒▒▒             ░░░▓████
-//        ███                         ░██
-//       ███                           ▓██
-//        █                             █░
-// "#;
 
 pub struct Dashboard {
     metrics_handle: TrainingMetricsHandle,
@@ -88,14 +49,14 @@ pub struct Dashboard {
 
 pub struct CrabAnimation {
     position: i32,
-    movement_speed: i32,
+    move_speed: i32,
     going_left: bool,
     half_width: u16,
 }
 
 impl CrabAnimation {
     fn is_oob(&self, terminal_width: u16) -> bool {
-        self.position <= 0 as i32 || self.position + self.half_width as i32 > terminal_width as i32
+        self.position <= 0_i32 || self.position + self.half_width as i32 > terminal_width as i32
     }
 }
 
@@ -106,7 +67,7 @@ impl Dashboard {
             should_quit: Arc::new(Mutex::new(false)),
             crab_animation: CrabAnimation {
                 position: 64,
-                movement_speed: 2,
+                move_speed: 2,
                 going_left: false,
                 half_width: 50,
             },
@@ -121,6 +82,7 @@ impl Dashboard {
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend)?;
 
+        // Run dashboard app
         let result = self.run_app(&mut terminal);
 
         // Restore terminal
@@ -131,30 +93,12 @@ impl Dashboard {
         result
     }
 
-    pub fn stop(&self) {
-        *self.should_quit.lock() = true;
-    }
-
     fn run_app(
         &mut self,
         terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     ) -> Result<(), io::Error> {
         loop {
-            // Update crab position before rendering
-            self.crab_animation.position += if self.crab_animation.going_left {
-                -self.crab_animation.movement_speed
-            } else {
-                self.crab_animation.movement_speed
-            };
-
-            if self.crab_animation.is_oob(terminal.size()?.width) {
-                // Reverse direction
-                self.crab_animation.going_left = !self.crab_animation.going_left;
-            }
-
             terminal.draw(|f| {
-                let metrics = self.metrics_handle.lock();
-
                 // Create layout
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
@@ -171,17 +115,21 @@ impl Dashboard {
                 // Title
                 self.render_title(f, chunks[0]);
 
-                // Current metrics
-                self.render_current_metrics(f, chunks[1], &metrics);
+                // Render all metric tabs
+                {
+                    let metrics = self.metrics_handle.lock();
+                    // Current metrics
+                    self.render_current_metrics(f, chunks[1], &metrics);
 
-                // Loss chart
-                self.render_loss_chart(f, chunks[2], &metrics);
+                    // Loss chart
+                    self.render_loss_chart(f, chunks[2], &metrics);
 
-                // Layer details
-                self.render_layer_details(f, chunks[3], &metrics);
+                    // Layer details
+                    self.render_layer_details(f, chunks[3], &metrics);
 
-                // Progress bar
-                self.render_progress_bar(f, chunks[4], &metrics);
+                    // Progress bar
+                    self.render_progress_bar(f, chunks[4], &metrics);
+                }
 
                 // Crab animation
                 self.render_crab(f, chunks[5]);
@@ -193,12 +141,13 @@ impl Dashboard {
             }
 
             // Poll for events with timeout
-            if event::poll(Duration::from_millis(100))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press && key.code == KeyCode::Char('q') {
-                        break;
-                    }
-                }
+            if event::poll(Duration::from_millis(100))?
+                && let Event::Key(key) = event::read()?
+                && key.kind == KeyEventKind::Press
+                && key.code == KeyCode::Char('q')
+            {
+                *self.should_quit.lock() = true;
+                break;
             }
         }
 
@@ -257,7 +206,6 @@ impl Dashboard {
         area: Rect,
         metrics: &parking_lot::MutexGuard<crate::metrics::TrainingMetrics>,
     ) {
-        // For now, we'll show a placeholder since we need to add history tracking
         let loss_history = &metrics.loss_history;
 
         if loss_history.is_empty() {
@@ -281,22 +229,65 @@ impl Dashboard {
             .map(|(_, loss)| *loss)
             .fold(f32::INFINITY, f32::min);
 
-        let data: Vec<(f64, f64)> = loss_history
-            .iter()
-            .map(|(batch, loss)| (*batch as f64, *loss as f64))
-            .collect();
+        // Calculate target number of points based on chart width
+        // Subtract borders (2) and some padding, estimate ~2 chars per point
+        let chart_width = area.width.saturating_sub(4) as usize;
+        let target_points = (chart_width / 2).clamp(50, 200);
+
+        // Sample or extend data to match target_points
+        let data: Vec<(f64, f64)> = if loss_history.len() <= target_points {
+            // Few samples: extend to full width by repeating last value
+            let max_batch = loss_history.last().map(|(b, _)| *b as f64).unwrap_or(1.0);
+            let last_loss = loss_history.last().map(|(_, l)| *l as f64).unwrap_or(0.0);
+
+            // First, add all existing data points
+            let mut points: Vec<(f64, f64)> = loss_history
+                .iter()
+                .map(|(batch, loss)| (*batch as f64, *loss as f64))
+                .collect();
+
+            // Then extend to target_points by filling with the last value
+            let batch_step = max_batch / (target_points - 1) as f64;
+            for i in loss_history.len()..target_points {
+                let batch = max_batch.max(i as f64 * batch_step);
+                points.push((batch, last_loss));
+            }
+
+            points
+        } else {
+            // Many samples: downsample using uniform sampling
+            let step = loss_history.len() as f64 / target_points as f64;
+            let mut points = Vec::with_capacity(target_points);
+
+            for i in 0..target_points {
+                let idx = (i as f64 * step).floor() as usize;
+                let idx = idx.min(loss_history.len() - 1);
+                let (batch, loss) = loss_history[idx];
+                points.push((batch as f64, loss as f64));
+            }
+
+            // Always include the last point
+            if let Some(&(batch, loss)) = loss_history.last()
+                && points.last().map(|&(b, _)| b) != Some(batch as f64)
+            {
+                points.push((batch as f64, loss as f64));
+            }
+
+            points
+        };
 
         let dataset = Dataset::default()
             .name("Loss")
-            .marker(symbols::Marker::Dot)
+            .marker(symbols::Marker::Braille)
+            .graph_type(GraphType::Line)
             .style(Style::default().fg(Color::Yellow))
             .data(&data);
 
-        let max_batch = loss_history.last().map(|(b, _)| *b as f64).unwrap_or(1.0);
+        let max_batch = data.last().map(|(b, _)| *b).unwrap_or(1.0);
 
         // Create X-axis labels
-        let x_labels = vec![
-            format!("0"),
+        let x_labels = [
+            "0".to_string(),
             format!("{:.0}", max_batch / 2.0),
             format!("{:.0}", max_batch),
         ];
@@ -305,7 +296,7 @@ impl Dashboard {
         // Create Y-axis labels
         let y_min = (min_loss * 0.9) as f64;
         let y_max = (max_loss * 1.1) as f64;
-        let y_labels = vec![
+        let y_labels = [
             format!("{:.4}", y_min),
             format!("{:.4}", (y_min + y_max) / 2.0),
             format!("{:.4}", y_max),
@@ -403,12 +394,24 @@ impl Dashboard {
         f.render_widget(batch_gauge, chunks[1]);
     }
 
-    fn render_crab(&self, f: &mut Frame, area: Rect) {
+    fn render_crab(&mut self, f: &mut Frame, area: Rect) {
+        // Update crab position before rendering
+        self.crab_animation.position += if self.crab_animation.going_left {
+            -self.crab_animation.move_speed
+        } else {
+            self.crab_animation.move_speed
+        };
+
+        if self.crab_animation.is_oob(area.width) {
+            // Reverse direction
+            self.crab_animation.going_left = !self.crab_animation.going_left;
+        }
+
         // Calculate padding to position the crab horizontally
         let pos = self.crab_animation.position as usize;
 
         // Add padding spaces to move the crab
-        let crab_lines: Vec<String> = CRAB_ICON
+        let crab_lines: Vec<String> = CRAB_ASCII
             .lines()
             .map(|line| format!("{:pos$}{}", "", line, pos = pos))
             .collect();
@@ -420,7 +423,7 @@ impl Dashboard {
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Training in Progress..."),
+                    .title("Cooking the crabformer..."),
             );
 
         f.render_widget(crab_widget, area);
@@ -432,92 +435,85 @@ impl Dashboard {
         area: Rect,
         metrics: &parking_lot::MutexGuard<crate::metrics::TrainingMetrics>,
     ) {
+        let total_transformer_blocks = metrics.total_transformer_blocks.max(1) as f64;
+
+        // Helper macro to format timing values
+        macro_rules! ms {
+            ($duration:expr) => {
+                $duration.as_secs_f64() * 1000.0
+            };
+        }
+
+        // Helper macro to create rows with consistent formatting
+        macro_rules! row {
+            ($label:expr, $fwd:expr, $bwd:expr) => {
+                ListItem::new(format!(
+                    "{:<23}Fwd: {:>6.2}ms  Bwd: {:>6.2}ms",
+                    $label, $fwd, $bwd
+                ))
+            };
+            ($label:expr, $fwd:expr, $bwd:expr, $total:expr) => {
+                ListItem::new(format!(
+                    "{:<23}Fwd: {:>6.2}ms  Bwd: {:>6.2}ms - (Sum blocks: {:>6.2}ms)",
+                    $label, $fwd, $bwd, $total
+                ))
+            };
+        }
+
         let items: Vec<ListItem> = vec![
-            ListItem::new(format!(
-                "Attention:         Fwd: {:>6.2}ms  Bwd: {:>6.2}ms",
-                metrics
-                    .attention_duration
-                    .avg_forward_duration()
-                    .as_secs_f64()
-                    * 1000.0,
-                metrics
-                    .attention_duration
-                    .avg_backward_duration()
-                    .as_secs_f64()
-                    * 1000.0
-            )),
-            ListItem::new(format!(
-                "Feed Forward:      Fwd: {:>6.2}ms  Bwd: {:>6.2}ms",
-                metrics
-                    .feed_forward_duration
-                    .avg_forward_duration()
-                    .as_secs_f64()
-                    * 1000.0,
-                metrics
-                    .feed_forward_duration
-                    .avg_backward_duration()
-                    .as_secs_f64()
-                    * 1000.0
-            )),
-            ListItem::new(format!(
-                "Layer Norm:        Fwd: {:>6.2}ms  Bwd: {:>6.2}ms",
-                metrics
-                    .layer_norm_duration
-                    .avg_forward_duration()
-                    .as_secs_f64()
-                    * 1000.0,
-                metrics
-                    .layer_norm_duration
-                    .avg_backward_duration()
-                    .as_secs_f64()
-                    * 1000.0
-            )),
-            ListItem::new(format!(
-                "Token Embedding:   Fwd: {:>6.2}ms  Bwd: {:>6.2}ms",
-                metrics
-                    .token_embedding_duration
-                    .avg_forward_duration()
-                    .as_secs_f64()
-                    * 1000.0,
-                metrics
-                    .token_embedding_duration
-                    .avg_backward_duration()
-                    .as_secs_f64()
-                    * 1000.0
-            )),
-            ListItem::new(format!(
-                "Pos Embedding:     Fwd: {:>6.2}ms  Bwd: {:>6.2}ms",
-                metrics
+            row!(
+                "Transformer block:",
+                ms!(metrics.transformer_block_duration.avg_forward_duration()),
+                ms!(metrics.transformer_block_duration.avg_backward_duration()),
+                (ms!(metrics.transformer_block_duration.avg_forward_duration())
+                    + ms!(metrics.transformer_block_duration.avg_backward_duration()))
+                    * total_transformer_blocks
+            ),
+            row!(
+                "Attention:",
+                ms!(metrics.attention_duration.avg_forward_duration()),
+                ms!(metrics.attention_duration.avg_backward_duration()),
+                (ms!(metrics.attention_duration.avg_forward_duration())
+                    + ms!(metrics.attention_duration.avg_backward_duration()))
+                    * total_transformer_blocks
+            ),
+            row!(
+                "Feed Forward:",
+                ms!(metrics.feed_forward_duration.avg_forward_duration()),
+                ms!(metrics.feed_forward_duration.avg_backward_duration()),
+                (ms!(metrics.feed_forward_duration.avg_forward_duration())
+                    + ms!(metrics.feed_forward_duration.avg_backward_duration()))
+                    * total_transformer_blocks
+            ),
+            row!(
+                "Layer Norm:",
+                ms!(metrics.layer_norm_duration.avg_forward_duration()),
+                ms!(metrics.layer_norm_duration.avg_backward_duration())
+            ),
+            row!(
+                "Token Embedding:",
+                ms!(metrics.token_embedding_duration.avg_forward_duration()),
+                ms!(metrics.token_embedding_duration.avg_backward_duration())
+            ),
+            row!(
+                "Pos Embedding:",
+                ms!(metrics.positional_embedding_duration.avg_forward_duration()),
+                ms!(metrics
                     .positional_embedding_duration
-                    .avg_forward_duration()
-                    .as_secs_f64()
-                    * 1000.0,
-                metrics
-                    .positional_embedding_duration
-                    .avg_backward_duration()
-                    .as_secs_f64()
-                    * 1000.0
-            )),
-            ListItem::new(format!(
-                "Output Layer:      Fwd: {:>6.2}ms  Bwd: {:>6.2}ms",
-                metrics
-                    .output_layer_duration
-                    .avg_forward_duration()
-                    .as_secs_f64()
-                    * 1000.0,
-                metrics
-                    .output_layer_duration
-                    .avg_backward_duration()
-                    .as_secs_f64()
-                    * 1000.0
-            )),
+                    .avg_backward_duration())
+            ),
+            row!(
+                "Output Layer:",
+                ms!(metrics.output_layer_duration.avg_forward_duration()),
+                ms!(metrics.output_layer_duration.avg_backward_duration())
+            ),
         ];
 
         let list = List::new(items)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Average Compute Durations per Layer Instance"),
+                    .title("Compute Durations per Layer"),
             )
             .style(Style::default().fg(Color::White));
 
@@ -525,7 +521,7 @@ impl Dashboard {
     }
 }
 
-/// Start a new training metrics dashboard in new separate thread.
+/// Creates and starts a training metrics dashboard in new thread.
 /// Returns a handle to signal the dashboard to quit, and the thread handle.
 pub fn start_dashboard(
     metrics_handle: TrainingMetricsHandle,

@@ -67,7 +67,7 @@ impl LayerNormLayer {
         }
     }
 
-    pub fn get_params(&mut self) -> Vec<crate::adamw::ParamHandle> {
+    pub fn get_params(&mut self) -> Vec<crate::adamw::ParamHandle<'_>> {
         vec![
             crate::adamw::ParamHandle::Array1 {
                 key: self.scale_grad.id(),
@@ -93,7 +93,7 @@ impl Layer for LayerNormLayer {
 
     fn forward(&self, input: &Self::Input) -> Self::Output {
         let mut output = input.clone();
-        let (batch_size, seq_len, dim) = input.dim();
+        let (batch_size, seq_len, _dim) = input.dim();
 
         // Normalize each token (each position in batch x seq) across its features (dim)
         for b in 0..batch_size {
@@ -103,7 +103,10 @@ impl Layer for LayerNormLayer {
 
                 // Compute mean and variance across features for this token
                 let mean = feature_vector.mean().unwrap_or(0.0);
-                let var = feature_vector.mapv(|x| (x - mean).powi(2)).mean().unwrap_or(0.0);
+                let var = feature_vector
+                    .mapv(|x| (x - mean).powi(2))
+                    .mean()
+                    .unwrap_or(0.0);
                 let std = (var + Self::EPSILON).sqrt();
 
                 // Normalize: (x - mean) / std
@@ -148,7 +151,10 @@ impl Layer for LayerNormLayer {
             let mut guard = self.scale_grad.mut_ref();
             let sg = guard.as_mut().unwrap();
             // Vectorized: sum across batch and sequence axes
-            *sg = &*sg + &(grad_output * &*normalized).sum_axis(Axis(0)).sum_axis(Axis(0));
+            *sg = &*sg
+                + &(grad_output * &*normalized)
+                    .sum_axis(Axis(0))
+                    .sum_axis(Axis(0));
         }
 
         // Gradient w.r.t. shift: sum over batch and sequence dimensions (vectorized)
@@ -174,7 +180,10 @@ impl Layer for LayerNormLayer {
                 let grad_norm_vec = grad_normalized.slice(ndarray::s![b, s, ..]);
 
                 let mean = feature_vec.mean().unwrap_or(0.0);
-                let var = feature_vec.mapv(|x| (x - mean).powi(2)).mean().unwrap_or(0.0);
+                let var = feature_vec
+                    .mapv(|x| (x - mean).powi(2))
+                    .mean()
+                    .unwrap_or(0.0);
                 let std = (var + Self::EPSILON).sqrt();
 
                 let n = dim as f32;
@@ -196,7 +205,7 @@ impl Layer for LayerNormLayer {
             }
         }
 
-        Ok(grad_input.into())
+        Ok(grad_input)
     }
 
     fn set_train(&mut self, _metrics_handle: TrainingMetricsHandle) {

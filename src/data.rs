@@ -1,14 +1,11 @@
 use ndarray::Array2;
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::Rng;
 use std::{
     fs::File,
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader},
 };
 
-use crate::{
-    errors::DataError,
-    params::{GLOBAL_RNG, RING_BUFFER_ADVANCE, RING_BUFFER_SIZE, SEQUENCE_LENGTH},
-};
+use crate::{errors::DataError, rng::GLOBAL_RNG};
 
 pub struct Batch {
     pub x: Array2<u32>, // [batch_size, sequence_length]
@@ -17,22 +14,34 @@ pub struct Batch {
 
 pub struct DataLoader {
     shuffler: RingShuffler<TokenStream>,
-    batch_size: usize,
     total_batches: usize,
     files: Vec<String>,
+
+    batch_size: usize,
+    buffer_size: usize,
+    sequence_length: usize,
+    advance: usize,
 }
 
 impl DataLoader {
-    pub fn new(files: Vec<String>, batch_size: usize) -> Result<Self, DataError> {
-        let total_batches = count_total_batches(&files)?;
+    pub fn new(
+        files: Vec<String>,
+        sequence_length: usize,
+        batch_size: usize,
+    ) -> Result<Self, DataError> {
+        // Number of bytes to advance the ring buffer after each batch
+        let advance = sequence_length * batch_size;
+        let buffer_size = 16 * advance;
+
+        let total_batches = count_total_batches(&files, advance, buffer_size)?;
         let total_tokens = count_total_tokens(&files)?;
         let token_stream = TokenStream::new(files.clone());
 
         let mut shuffler = RingShuffler::new(
             token_stream,
-            RING_BUFFER_SIZE,
-            SEQUENCE_LENGTH,
-            RING_BUFFER_ADVANCE, // Use the configured advance amount
+            buffer_size,
+            sequence_length,
+            advance,
             total_tokens,
         );
         shuffler.warmup()?;
@@ -40,6 +49,9 @@ impl DataLoader {
         Ok(Self {
             shuffler,
             batch_size,
+            buffer_size,
+            sequence_length,
+            advance,
             total_batches,
             files,
         })
@@ -60,9 +72,9 @@ impl DataLoader {
 
         let mut shuffler = RingShuffler::new(
             token_stream,
-            RING_BUFFER_SIZE,
-            SEQUENCE_LENGTH,
-            RING_BUFFER_ADVANCE, // Use the configured advance amount
+            self.buffer_size,
+            self.sequence_length,
+            self.advance,
             total_tokens,
         );
         shuffler.warmup()?;
@@ -97,7 +109,7 @@ where
     S: Iterator<Item = Result<u32, DataError>>,
 {
     fn new(stream: S, cap: usize, t: usize, advance: usize, max_tokens: usize) -> Self {
-        assert!(cap >= t + 1, "ring capacity must be >= T+1");
+        assert!(cap > t, "ring capacity must be > T");
         Self {
             ring: vec![0; cap],
             cap,
@@ -134,8 +146,6 @@ where
             return Ok(None);
         }
 
-        // let mut x = vec![0u32; batch_size * self.sequence_length];
-        // let mut y = vec![0u32; batch_size * self.sequence_length];
         let mut x = Array2::<u32>::zeros((batch_size, self.sequence_length));
         let mut y = Array2::<u32>::zeros((batch_size, self.sequence_length));
 
@@ -151,8 +161,6 @@ where
             }
         }
 
-        // advance ring with fresh tokens
-        let mut tokens_advanced = 0;
         for _ in 0..self.advance {
             // Stop if we've already consumed all tokens
             if self.tokens_consumed >= self.max_tokens {
@@ -165,7 +173,6 @@ where
                     self.ring[self.head] = tok;
                     self.head = (self.head + 1) % self.cap;
                     self.tokens_consumed += 1;
-                    tokens_advanced += 1;
                 }
                 Some(Err(e)) => return Err(e),
                 None => {
@@ -228,18 +235,16 @@ impl Iterator for TokenStream {
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
-            if self.current_file_buffer.is_none() && self.open_next_file().ok()? == false {
+            if self.current_file_buffer.is_none() && !self.open_next_file().ok()? {
                 return None; // No more files to read
             }
-
-            // self.current_file_buffer.as_mut().ok_or(DataError::Io(()))
 
             let Some(reader) = self.current_file_buffer.as_mut() else {
                 return Some(Err(DataError::Io("Failed to get file buffer".into())));
             };
 
             let buf = match reader.fill_buf() {
-                Ok(buf) if buf.is_empty() => {
+                Ok([]) => {
                     self.current_file_buffer = None; // End of file reached
                     continue; // Move to the next file
                 }
@@ -259,7 +264,7 @@ fn count_total_tokens(data_files: &Vec<String>) -> Result<usize, DataError> {
     let mut total_tokens = 0usize;
 
     for file_path in data_files {
-        let file = File::open(&file_path).map_err(|e| DataError::FileError(e.to_string()))?;
+        let file = File::open(file_path).map_err(|e| DataError::FileError(e.to_string()))?;
         let file_length = file
             .metadata()
             .map_err(|e| DataError::FileError(e.to_string()))?
@@ -271,14 +276,17 @@ fn count_total_tokens(data_files: &Vec<String>) -> Result<usize, DataError> {
     Ok(total_tokens)
 }
 
-fn count_total_batches(data_files: &Vec<String>) -> Result<usize, DataError> {
+fn count_total_batches(
+    data_files: &Vec<String>,
+    advance: usize,
+    buffer_size: usize,
+) -> Result<usize, DataError> {
     let total_tokens = count_total_tokens(data_files)?;
 
-    // With ring shuffler: we advance by RING_BUFFER_ADVANCE tokens per batch
+    // With ring shuffler: we advance by `advance` tokens per batch
     // After warmup, remaining tokens divided by advance per batch gives us batch count
-    let remaining_after_warmup = total_tokens.saturating_sub(RING_BUFFER_SIZE);
-    let advance_per_batch = RING_BUFFER_ADVANCE;
-    let total_batches = remaining_after_warmup / advance_per_batch;
+    let remaining_after_warmup = total_tokens.saturating_sub(buffer_size);
+    let total_batches = remaining_after_warmup / advance;
 
     Ok(total_batches)
 }

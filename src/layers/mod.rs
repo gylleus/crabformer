@@ -1,11 +1,11 @@
 use parking_lot::RwLock;
 
-use ndarray::{Array, Array2, Array3, Data};
-use rand::{Rng, RngCore, TryRngCore, rngs::StdRng};
+use ndarray::{Array, Array2};
+use rand::{Rng, RngCore};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
-    adamw::ParamHandle, errors::ModelError, metrics::TrainingMetricsHandle, params::GLOBAL_RNG,
+    adamw::ParamHandle, errors::ModelError, metrics::TrainingMetricsHandle, rng::GLOBAL_RNG,
 };
 
 pub mod activation;
@@ -18,7 +18,7 @@ pub mod self_attention;
 pub mod transformer_block;
 
 /// Initialize an array with Xavier/Glorot initialization.
-/// This should keep variance of activations and gradients roughly the same across layers, to keep training more stable.
+/// This aims to keep variance of activations and gradients roughly the same across layers, to keep training more stable.
 pub fn xavier_initialized_array(fan_in: usize, fan_out: usize) -> Array2<f32> {
     let limit = (6.0 / (fan_in as f32 + fan_out as f32)).sqrt();
 
@@ -27,34 +27,27 @@ pub fn xavier_initialized_array(fan_in: usize, fan_out: usize) -> Array2<f32> {
     })
 }
 
-/// Type alias for layers that take 3D f32 arrays as input and output
-pub type Layer3Df32 = dyn Layer<Input = Array3<f32>, Output = Array3<f32>>;
-
 pub trait Layer: ZeroGrad + Serialize + DeserializeOwned {
     type Input;
     type Output;
 
+    #[allow(dead_code)]
     fn name(&self) -> &str;
 
+    /// Forward pass: computes the layer output from the input.
+    /// In the case of training, the layer caches intermediate results for the backward pass if needed.
     fn forward(&self, input: &Self::Input) -> Self::Output;
 
-    /// Backward pass: computes gradients with respect to inputs.
-    ///
-    /// # Arguments
-    /// * `grad_output` - Gradient of loss with respect to this layer's output
-    ///
-    /// # Returns
-    /// Gradient of loss with respect to this layer's input, or an error if backward
-    /// is called without a prior forward_train call
+    /// Backward pass: computes and caches gradients with respect to inputs.
     fn backward(&mut self, grad_output: &Self::Output) -> Result<Self::Input, ModelError>;
 
     /// Set the layer to training mode (enables caching for backward pass)
-    fn set_train(&mut self, metrics_handle: TrainingMetricsHandle) {}
+    fn set_train(&mut self, _metrics_handle: TrainingMetricsHandle) {}
 
     /// Set the layer to evaluation mode (disables caching to save memory)
     fn set_eval(&mut self) {}
 
-    fn get_params(&mut self) -> Vec<ParamHandle> {
+    fn get_params(&mut self) -> Vec<ParamHandle<'_>> {
         Vec::new()
     }
 }
@@ -66,8 +59,8 @@ pub trait ZeroGrad {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ParamKey(pub u64);
 
-/// Helper struct for caching layer parameters during training without requiring mutable references to the layer.
-
+/// Helper struct for caching layer parameters during training without requiring mutable references to the layer itself.
+/// Using a lock like this adds a small overhead, but it is negligible compared to the rest of the model computations.
 pub struct LayerCacheParam<T> {
     pub data: RwLock<Option<T>>,
     pub id: ParamKey,

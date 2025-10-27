@@ -1,9 +1,10 @@
 use crate::{
+    adamw::ParamHandle,
     errors::ModelError,
     layers::{Layer, LayerCacheParam, ZeroGrad, xavier_initialized_array},
     metrics::TrainingMetricsHandle,
 };
-use ndarray::{Axis, s};
+use ndarray::s;
 
 use ndarray::{Array2, Array3};
 use serde::{Deserialize, Serialize};
@@ -11,15 +12,13 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize)]
 pub struct EmbeddingLayer {
     pub weights: Array2<f32>,
-    // pub gradients: Array2<f32>,
-    // Cache input tokens for backward pass
+    training: bool,
+    name: String,
+
     #[serde(skip)]
     weight_grad: LayerCacheParam<Array2<f32>>,
     #[serde(skip)]
     last_input_tokens: LayerCacheParam<Array2<u32>>,
-    training: bool,
-
-    name: String,
 }
 
 impl EmbeddingLayer {
@@ -41,7 +40,6 @@ impl EmbeddingLayer {
     pub fn forward_fill(&self, input_tokens: &Array2<u32>, output: &mut Array3<f32>) {
         let (batch_size, seq_length) = input_tokens.dim();
         assert_eq!(output.dim(), (batch_size, seq_length, self.weights.ncols()));
-        // assert_eq!(output.dim(), (input_tokens.len(), self.weights.ncols()));
 
         for batch_idx in 0..batch_size {
             for seq_idx in 0..seq_length {
@@ -111,8 +109,8 @@ impl Layer for EmbeddingLayer {
         self.last_input_tokens.clear();
     }
 
-    fn get_params(&mut self) -> Vec<crate::adamw::ParamHandle> {
-        vec![crate::adamw::ParamHandle::Array2 {
+    fn get_params(&mut self) -> Vec<ParamHandle<'_>> {
+        vec![ParamHandle::Array2 {
             key: self.weight_grad.id(),
             data: &mut self.weights,
             grad: &self.weight_grad,

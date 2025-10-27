@@ -1,16 +1,16 @@
 use ndarray::{Array, RemoveAxis};
 
 /// GELU (Gaussian Error Linear Unit) activation.
-pub trait GELU {
+pub trait Gelu {
     fn apply_gelu(&mut self);
 }
 
-impl<D> GELU for Array<f32, D>
+impl<D> Gelu for Array<f32, D>
 where
     D: ndarray::Dimension + RemoveAxis,
 {
     fn apply_gelu(&mut self) {
-        self.mapv_inplace(|x| gelu(x));
+        self.mapv_inplace(gelu);
     }
 }
 

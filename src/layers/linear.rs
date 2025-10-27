@@ -1,4 +1,5 @@
-use ndarray::{Array1, Array2, Array3, ArrayBase, Data, Ix2};
+use ndarray::{Array1, Array2, Array3, s};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -6,7 +7,7 @@ use crate::{
     errors::ModelError,
     layers::{
         Layer, LayerCacheParam, ZeroGrad,
-        activation::{GELU, gelu_derivative},
+        activation::{Gelu, gelu_derivative},
         xavier_initialized_array,
     },
     metrics::TrainingMetricsHandle,
@@ -62,7 +63,7 @@ impl Layer for LinearLayer {
     }
 
     fn forward(&self, input: &Self::Input) -> Self::Output {
-        let (batch_size, seq_len, dim_in) = input.dim();
+        let (batch_size, seq_len, _dim_in) = input.dim();
         let dim_out = self.weights.dim().1;
 
         // Cache the input shape for backward pass
@@ -70,18 +71,26 @@ impl Layer for LinearLayer {
             *self.last_input.mut_ref() = Some(input.clone());
         }
 
-        let input_2d = input.to_shape((batch_size * seq_len, dim_in)).unwrap();
+        // Parallelize across batch dimension
+        let batch_results: Vec<Array2<f32>> = (0..batch_size)
+            .into_par_iter()
+            .map(|b| {
+                let batch_input = input.slice(s![b, .., ..]);
+                let mut batch_output = batch_input.dot(&self.weights);
+                if let Some(bias) = &self.bias {
+                    batch_output += bias;
+                }
+                batch_output
+            })
+            .collect();
 
-        let mut output_2d = input_2d.dot(&self.weights);
-        if let Some(bias) = &self.bias {
-            output_2d = output_2d + bias;
+        // Combine results back into 3D array
+        let mut output = Array3::<f32>::zeros((batch_size, seq_len, dim_out));
+        for (b, result) in batch_results.into_iter().enumerate() {
+            output.slice_mut(s![b, .., ..]).assign(&result);
         }
 
-        // Reshape back to 3D: (batch_size, seq_len, dim_out)
-        output_2d
-            .to_shape((batch_size, seq_len, dim_out))
-            .unwrap()
-            .to_owned()
+        output
     }
 
     fn backward(&mut self, grad_output: &Self::Output) -> Result<Self::Input, ModelError> {
@@ -102,36 +111,50 @@ impl Layer for LinearLayer {
             *bias_grad_mut = Some(Array1::zeros(dim_out));
         }
 
-        // Reshape to 2D for computation
-        let input_2d = input.to_shape((batch_size * seq_len, dim_in)).unwrap();
-        let grad_output_2d = grad_output
-            .to_shape((batch_size * seq_len, dim_out))
-            .unwrap();
+        // Parallelize gradient computation across batches
+        #[allow(clippy::type_complexity)]
+        let grad_results: Vec<(Array2<f32>, Option<Array1<f32>>, Array2<f32>)> = (0..batch_size)
+            .into_par_iter()
+            .map(|b| {
+                let batch_input = input.slice(s![b, .., ..]);
+                let batch_grad_output = grad_output.slice(s![b, .., ..]);
 
-        // Gradient w.r.t. weights: dL/dW = input^T @ grad_output
-        // Shape: (dim_in, batch*seq) @ (batch*seq, dim_out) = (dim_in, dim_out)
-        let weight_grad = input_2d.t().dot(&grad_output_2d);
+                // Gradient w.r.t. weights for this batch: input^T @ grad_output
+                let weight_grad_batch = batch_input.t().dot(&batch_grad_output);
 
-        // Accumulate gradients (important for batching)
-        if let Some(wg) = weight_grad_mut.as_mut() {
-            *wg = &*wg + &weight_grad;
+                // Gradient w.r.t. bias for this batch: sum over sequence dimension
+                let bias_grad_batch = if self.bias.is_some() {
+                    Some(batch_grad_output.sum_axis(ndarray::Axis(0)))
+                } else {
+                    None
+                };
+
+                // Gradient w.r.t. input: grad_output @ weights^T
+                let grad_input_batch = batch_grad_output.dot(&self.weights.t());
+
+                (weight_grad_batch, bias_grad_batch, grad_input_batch)
+            })
+            .collect();
+
+        // Accumulate weight and bias gradients from all batches
+        for (weight_grad_batch, bias_grad_batch, _) in &grad_results {
+            if let Some(wg) = weight_grad_mut.as_mut() {
+                *wg = &*wg + weight_grad_batch;
+            }
+            if let (Some(bg), Some(bias_grad)) = (bias_grad_mut.as_mut(), bias_grad_batch) {
+                *bg = &*bg + bias_grad;
+            }
         }
 
-        // Gradient w.r.t. bias: sum over batch and sequence dimensions
-        if let Some(bg) = bias_grad_mut.as_mut() {
-            let bias_grad = grad_output_2d.sum_axis(ndarray::Axis(0));
-            *bg = &*bg + &bias_grad;
+        // Combine input gradients back into 3D array
+        let mut grad_input = Array3::<f32>::zeros((batch_size, seq_len, dim_in));
+        for (b, (_, _, grad_input_batch)) in grad_results.into_iter().enumerate() {
+            grad_input
+                .slice_mut(s![b, .., ..])
+                .assign(&grad_input_batch);
         }
 
-        // Gradient w.r.t. input: grad_output @ weights^T
-        // Shape: (batch*seq, dim_out) @ (dim_out, dim_in) = (batch*seq, dim_in)
-        let grad_input_2d = grad_output_2d.dot(&self.weights.t());
-
-        // Reshape back to 3D
-        Ok(grad_input_2d
-            .to_shape((batch_size, seq_len, dim_in))
-            .unwrap()
-            .to_owned())
+        Ok(grad_input)
     }
 
     fn set_train(&mut self, _metrics_handle: TrainingMetricsHandle) {
@@ -142,7 +165,7 @@ impl Layer for LinearLayer {
         self.training = false;
     }
 
-    fn get_params(&mut self) -> Vec<adamw::ParamHandle> {
+    fn get_params(&mut self) -> Vec<adamw::ParamHandle<'_>> {
         let mut params = vec![adamw::ParamHandle::Array2 {
             key: self.weight_grad.id(),
             data: &mut self.weights,
@@ -213,7 +236,7 @@ impl Layer for FeedForwardLayer {
     }
 
     fn forward(&self, input: &Self::Input) -> Self::Output {
-        let mut hidden = self.linear1.forward(input);
+        let hidden = self.linear1.forward(input);
 
         // Cache the hidden state BEFORE activation for backward pass
         if self.training {
@@ -221,24 +244,58 @@ impl Layer for FeedForwardLayer {
             *self.last_hidden.mut_ref() = Some(hidden.clone());
         }
 
-        // Apply non-linearity (GELU)
-        hidden.apply_gelu();
-        let output = self.linear2.forward(&hidden);
-        output
+        let (batch_size, seq_len, dim_ff) = hidden.dim();
+
+        // Apply GELU activation in parallel across batch dimension
+        let activated_batches: Vec<Array2<f32>> = (0..batch_size)
+            .into_par_iter()
+            .map(|b| {
+                let mut batch_hidden = hidden.slice(s![b, .., ..]).to_owned();
+                batch_hidden.apply_gelu();
+                batch_hidden
+            })
+            .collect();
+
+        // Reconstruct the activated hidden state
+        let mut activated_hidden = Array3::<f32>::zeros((batch_size, seq_len, dim_ff));
+        for (b, batch) in activated_batches.into_iter().enumerate() {
+            activated_hidden.slice_mut(s![b, .., ..]).assign(&batch);
+        }
+
+        self.linear2.forward(&activated_hidden)
     }
 
     fn backward(&mut self, grad_output: &Self::Output) -> Result<Self::Input, ModelError> {
         let hidden = self.last_hidden.read_ref()?;
 
         // Backprop through second linear layer
-        let mut grad_hidden = self.linear2.backward(grad_output)?;
+        let grad_hidden = self.linear2.backward(grad_output)?;
 
-        // Backprop through GELU activation
+        let (batch_size, seq_len, dim_ff) = grad_hidden.dim();
+
+        // Backprop through GELU activation in parallel across batch dimension
         // GELU'(x) needs the original input to GELU (which is the hidden state)
-        grad_hidden = grad_hidden * &hidden.mapv(|x| gelu_derivative(x));
+        let grad_hidden_batches: Vec<Array2<f32>> = (0..batch_size)
+            .into_par_iter()
+            .map(|b| {
+                let batch_grad_hidden = grad_hidden.slice(s![b, .., ..]);
+                let batch_hidden = hidden.slice(s![b, .., ..]);
+
+                // Apply GELU derivative element-wise
+                &batch_grad_hidden.to_owned() * &batch_hidden.mapv(gelu_derivative)
+            })
+            .collect();
+
+        // Reconstruct the gradient after GELU backprop
+        let mut grad_hidden_after_gelu = Array3::<f32>::zeros((batch_size, seq_len, dim_ff));
+        for (b, batch) in grad_hidden_batches.into_iter().enumerate() {
+            grad_hidden_after_gelu
+                .slice_mut(s![b, .., ..])
+                .assign(&batch);
+        }
 
         // Backprop through first linear layer
-        let grad_input = self.linear1.backward(&grad_hidden)?;
+        let grad_input = self.linear1.backward(&grad_hidden_after_gelu)?;
 
         Ok(grad_input)
     }
@@ -255,7 +312,7 @@ impl Layer for FeedForwardLayer {
         self.linear2.set_eval();
     }
 
-    fn get_params(&mut self) -> Vec<adamw::ParamHandle> {
+    fn get_params(&mut self) -> Vec<adamw::ParamHandle<'_>> {
         let mut params = Vec::new();
 
         // Collect parameters from both linear layers

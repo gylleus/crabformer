@@ -56,7 +56,9 @@ pub struct TrainingMetrics {
     /// History of (batch_number, loss) for plotting
     pub loss_history: Vec<(usize, f32)>,
 
-    /// Total time spent in transformer blocks
+    pub total_transformer_blocks: usize,
+
+    /// Total time spent per transformer block
     pub transformer_block_duration: TrainingDuration,
 
     pub token_embedding_duration: TrainingDuration,
@@ -70,7 +72,7 @@ pub struct TrainingMetrics {
 }
 
 impl TrainingMetrics {
-    pub fn new(epochs: usize, batches_per_epoch: usize) -> Self {
+    pub fn new(epochs: usize, batches_per_epoch: usize, total_transformer_blocks: usize) -> Self {
         Self {
             epochs,
             batches_per_epoch,
@@ -78,6 +80,7 @@ impl TrainingMetrics {
             processed_batches: 0,
             start_time: Instant::now(),
             loss_history: Vec::new(),
+            total_transformer_blocks,
             transformer_block_duration: TrainingDuration::default(),
             token_embedding_duration: TrainingDuration::default(),
             positional_embedding_duration: TrainingDuration::default(),

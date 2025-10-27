@@ -1,13 +1,4 @@
-use std::{
-    cell::Cell,
-    sync::{
-        Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
-};
-
 use ndarray::{Array2, Array3, Array4, s};
-use rand::{SeedableRng, rngs::StdRng};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +9,6 @@ use crate::{
         normalization::Softmax,
     },
     metrics::TrainingMetricsHandle,
-    params::SEQUENCE_LENGTH,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -28,6 +18,7 @@ pub struct MultiHeadAttentionLayer {
     pub value_weights: LinearLayer,
 
     use_casual_mask: bool,
+    seq_length: usize,
     dim_out: usize,
     num_heads: usize,
     dropout_rate: f32,
@@ -64,12 +55,13 @@ impl MultiHeadAttentionLayer {
         dim_in: usize,
         dim_out: usize,
         num_heads: usize,
+        seq_length: usize,
         dropout_rate: f32,
         name: Option<String>,
     ) -> Result<Self, ModelError> {
         let name = name.unwrap_or("MultiHeadAttentionLayer".into());
 
-        if dim_out % num_heads != 0 {
+        if !dim_out.is_multiple_of(num_heads) {
             return Err(ModelError::DimensionMismatch(format!(
                 "dim_out {} must be divisible by num_heads {}",
                 dim_out, num_heads
@@ -88,6 +80,7 @@ impl MultiHeadAttentionLayer {
             dim_out,
             num_heads,
             value_weights,
+            seq_length,
             use_casual_mask: false,
             dropout_rate,
             training: false,
@@ -100,7 +93,10 @@ impl MultiHeadAttentionLayer {
             last_keys: LayerCacheParam::new(format!("{}::last_keys", name)),
             last_queries: LayerCacheParam::new(format!("{}::last_queries", name)),
             last_input: LayerCacheParam::new(format!("{}::last_input", name)),
-            attention_dropout_mask: LayerCacheParam::new(format!("{}::attention_dropout_mask", name)),
+            attention_dropout_mask: LayerCacheParam::new(format!(
+                "{}::attention_dropout_mask",
+                name
+            )),
             name,
         })
     }
@@ -129,7 +125,7 @@ impl MultiHeadAttentionLayer {
         // Lazily initialize the mask on first use
         if cache.is_none() {
             *cache = Some(Array2::from_shape_fn(
-                (SEQUENCE_LENGTH, SEQUENCE_LENGTH),
+                (self.seq_length, self.seq_length),
                 |(i, j)| {
                     // Allowed positions remain unchanged, blocked future positions get -inf
                     if j <= i { 0.0 } else { f32::NEG_INFINITY }
@@ -256,7 +252,7 @@ impl Layer for MultiHeadAttentionLayer {
                 .unwrap()
                 .to_owned();
             *self.last_attention_weights.mut_ref() = Some(attention_weights_all);
-        
+
             // Apply dropout to attention scores and save mask
             let mask = attention_scores.apply_dropout(self.dropout_rate);
             *self.attention_dropout_mask.mut_ref() = mask;
@@ -284,12 +280,10 @@ impl Layer for MultiHeadAttentionLayer {
         let context_reordered = context_4d.permuted_axes([0, 2, 1, 3]);
 
         // Reshape to (batch, seq, dim_out) to concatenate heads
-        let output = context_reordered
+        context_reordered
             .to_shape((batch_size, seq_len, self.dim_out))
             .unwrap()
-            .to_owned();
-
-        output
+            .to_owned()
     }
 
     fn backward(&mut self, grad_output: &Self::Output) -> Result<Self::Input, ModelError> {
@@ -315,7 +309,9 @@ impl Layer for MultiHeadAttentionLayer {
         let dropout_rate = self.dropout_rate;
         let keep_prob = 1.0 - dropout_rate;
 
-        let grad_results: Vec<(usize, usize, Array2<f32>, Array2<f32>, Array2<f32>)> = (0..batch_heads)
+        #[allow(clippy::type_complexity)]
+        let grad_results: Vec<(usize, usize, Array2<f32>, Array2<f32>, Array2<f32>)> = (0
+            ..batch_heads)
             .into_par_iter()
             .map(|idx| {
                 let batch = idx / self.num_heads;
@@ -381,9 +377,13 @@ impl Layer for MultiHeadAttentionLayer {
 
         // Assign results back to gradient arrays
         for (batch, head, grad_q, grad_k, grad_v) in grad_results {
-            grad_queries.slice_mut(s![batch, head, .., ..]).assign(&grad_q);
+            grad_queries
+                .slice_mut(s![batch, head, .., ..])
+                .assign(&grad_q);
             grad_keys.slice_mut(s![batch, head, .., ..]).assign(&grad_k);
-            grad_values.slice_mut(s![batch, head, .., ..]).assign(&grad_v);
+            grad_values
+                .slice_mut(s![batch, head, .., ..])
+                .assign(&grad_v);
         }
 
         // Reshape gradients back: (batch, num_heads, seq, head_dim) -> (batch, seq, dim_out)
@@ -438,7 +438,7 @@ impl Layer for MultiHeadAttentionLayer {
         *self.last_input.mut_ref() = None;
     }
 
-    fn get_params(&mut self) -> Vec<crate::layers::ParamHandle> {
+    fn get_params(&mut self) -> Vec<crate::layers::ParamHandle<'_>> {
         let mut params = Vec::new();
 
         // Collect parameters from Q, K, V projection layers

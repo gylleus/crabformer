@@ -1,15 +1,8 @@
-use ndarray::{Array2, Array3, Axis};
+use ndarray::{Array2, Array3};
 
 /// Computes the cross-entropy loss between predictions and targets.
-///
-/// # Arguments
-/// * `logits` - Model output logits [batch_size, seq_len, vocab_size]
-/// * `targets` - Target token indices [batch_size, seq_len]
-///
-/// # Returns
-/// The average cross-entropy loss across the batch
 pub fn cross_entropy_loss(logits: &Array3<f32>, targets: &Array2<u32>) -> f32 {
-    let (batch_size, seq_len, vocab_size) = logits.dim();
+    let (batch_size, seq_len, _vocab_size) = logits.dim();
     let mut total_loss = 0.0;
 
     for batch_idx in 0..batch_size {
@@ -18,7 +11,10 @@ pub fn cross_entropy_loss(logits: &Array3<f32>, targets: &Array2<u32>) -> f32 {
             let target = targets[[batch_idx, seq_idx]] as usize;
 
             // Compute softmax for numerical stability
-            let max_logit = logit_slice.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let max_logit = logit_slice
+                .iter()
+                .cloned()
+                .fold(f32::NEG_INFINITY, f32::max);
             let exp_sum: f32 = logit_slice.iter().map(|&x| (x - max_logit).exp()).sum();
             let log_sum_exp = max_logit + exp_sum.ln();
 
@@ -32,17 +28,6 @@ pub fn cross_entropy_loss(logits: &Array3<f32>, targets: &Array2<u32>) -> f32 {
 }
 
 /// Computes the gradient of cross-entropy loss with respect to logits.
-///
-/// For cross-entropy loss with softmax, the gradient is:
-/// grad[i] = softmax(logits)[i] - 1  if i == target
-/// grad[i] = softmax(logits)[i]      otherwise
-///
-/// # Arguments
-/// * `logits` - Model output logits [batch_size, seq_len, vocab_size]
-/// * `targets` - Target token indices [batch_size, seq_len]
-///
-/// # Returns
-/// Gradient of loss w.r.t. logits [batch_size, seq_len, vocab_size]
 pub fn cross_entropy_loss_backward(logits: &Array3<f32>, targets: &Array2<u32>) -> Array3<f32> {
     let (batch_size, seq_len, vocab_size) = logits.dim();
     let mut grad = Array3::<f32>::zeros((batch_size, seq_len, vocab_size));
@@ -53,7 +38,10 @@ pub fn cross_entropy_loss_backward(logits: &Array3<f32>, targets: &Array2<u32>) 
             let target = targets[[batch_idx, seq_idx]] as usize;
 
             // Compute softmax
-            let max_logit = logit_slice.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let max_logit = logit_slice
+                .iter()
+                .cloned()
+                .fold(f32::NEG_INFINITY, f32::max);
             let exp_sum: f32 = logit_slice.iter().map(|&x| (x - max_logit).exp()).sum();
 
             // Fill gradient: softmax(logits)

@@ -1,8 +1,7 @@
 use std::{sync::Arc, time::Instant};
 
-use ndarray::{Array2, Array3, s};
+use ndarray::{Array2, Array3};
 use parking_lot::Mutex;
-use rand::distr::{Distribution, weighted::WeightedIndex};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -10,24 +9,17 @@ use crate::{
     data::{Batch, DataLoader},
     errors::ModelError,
     layers::{
-        Layer, LayerCacheParam, ZeroGrad,
-        dropout::Dropout,
-        embedding::EmbeddingLayer,
-        linear::LinearLayer,
-        normalization::{LayerNormLayer, Softmax},
-        transformer_block::TransformerBlock,
+        Layer, LayerCacheParam, ZeroGrad, dropout::Dropout, embedding::EmbeddingLayer,
+        linear::LinearLayer, normalization::LayerNormLayer, transformer_block::TransformerBlock,
     },
     loss::{cross_entropy_loss, cross_entropy_loss_backward},
     metrics::{TrainingMetrics, TrainingMetricsHandle},
-    params::{
-        ADAMW_BETA1, ADAMW_BETA2, ADAMW_EPSILON, ATTENTION_HEADS, CHECKPOINTS_DIR, DROPOUT_RATE,
-        EMBED_DIMENSION, FF_HIDDEN_DIMENSION, GLOBAL_RNG, LEARNING_RATE, SAVE_EVERY_N_STEPS,
-        SEQUENCE_LENGTH, TEMPERATURE, TRANSFORMER_BLOCKS, WEIGHT_DECAY,
-    },
 };
 
 #[derive(Serialize, Deserialize)]
 pub struct CrabformerModel {
+    pub config: ModelConfig,
+
     token_embedding_layer: EmbeddingLayer,
     position_embedding_layer: EmbeddingLayer,
     transformer_layers: Vec<TransformerBlock>,
@@ -48,16 +40,33 @@ pub struct CrabformerModel {
     adamw_optimizer: Option<AdamWOptimizer>,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ModelConfig {
+    pub vocab_size: usize,
+    pub transformer_blocks: usize,
+    pub embed_dim: usize,
+    pub attention_heads: usize,
+    pub ff_hidden_dim: usize,
+    pub dropout: f32,
+    pub seq_length: usize,
+
+    pub qkv_bias: bool,
+    pub learning_rate: f32,
+    pub weight_decay: f32,
+}
+
 impl CrabformerModel {
-    pub fn new(vocab_size: usize) -> Result<Self, ModelError> {
-        let transformer_layers: Vec<_> = (0..TRANSFORMER_BLOCKS)
+    pub fn new(config: ModelConfig) -> Result<Self, ModelError> {
+        let transformer_layers: Vec<_> = (0..config.transformer_blocks)
             .map(|i| {
                 let name = format!("TransformerBlock_{}", i);
                 TransformerBlock::new(
-                    EMBED_DIMENSION,
-                    ATTENTION_HEADS,
-                    FF_HIDDEN_DIMENSION,
-                    DROPOUT_RATE,
+                    config.seq_length,
+                    config.embed_dim,
+                    config.attention_heads,
+                    config.ff_hidden_dim,
+                    config.dropout,
+                    config.qkv_bias,
                     Some(name),
                 )
             })
@@ -65,63 +74,42 @@ impl CrabformerModel {
 
         Ok(Self {
             token_embedding_layer: EmbeddingLayer::new(
-                vocab_size,
-                EMBED_DIMENSION,
+                config.vocab_size,
+                config.embed_dim,
                 Some("TokenEmbeddingLayer".into()),
             ),
             position_embedding_layer: EmbeddingLayer::new(
-                SEQUENCE_LENGTH,
-                EMBED_DIMENSION,
+                config.seq_length,
+                config.embed_dim,
                 Some("PositionEmbeddingLayer".into()),
             ),
             transformer_layers,
             final_layer_norm: crate::layers::normalization::LayerNormLayer::new(
-                EMBED_DIMENSION,
+                config.embed_dim,
                 Some("FinalLayerNorm".into()),
             ),
-            output_layer: LinearLayer::new(EMBED_DIMENSION, vocab_size, Some("OutputLayer".into()))
-                .with_bias(),
+            output_layer: LinearLayer::new(
+                config.embed_dim,
+                config.vocab_size,
+                Some("OutputLayer".into()),
+            )
+            .with_bias(),
 
             training: false,
             adamw_optimizer: Some(AdamWOptimizer::new(
-                LEARNING_RATE,
-                ADAMW_BETA1,
-                ADAMW_BETA2,
-                ADAMW_EPSILON,
-                WEIGHT_DECAY,
+                config.learning_rate,
+                0.9,
+                0.999,
+                1e-8,
+                config.weight_decay,
             )),
             last_embeddings: LayerCacheParam::new("CrabformerModel::last_embeddings".to_string()),
             last_positions: LayerCacheParam::new("CrabformerModel::last_positions".to_string()),
             embedding_dropout_mask: LayerCacheParam::new(
                 "CrabformerModel::embedding_dropout_mask".to_string(),
             ),
+            config,
         })
-    }
-
-    pub fn next_token_batch(&self, input: &Batch) -> Vec<u32> {
-        let model_output = self.forward_batch(input);
-        let (batch_size, seq_length, _vocab_size) = model_output.dim();
-        assert_eq!(seq_length, SEQUENCE_LENGTH);
-
-        let mut next_tokens = Vec::with_capacity(batch_size);
-
-        let mut rng = GLOBAL_RNG.lock();
-        for batch_idx in 0..batch_size {
-            // Get the logits for the last token in the sequence
-            let mut last_token_logits = model_output
-                .slice(s![batch_idx, seq_length - 1, ..])
-                .to_owned();
-
-            // Apply softmax to convert logits to probabilities
-            last_token_logits.softmax(0, Some(TEMPERATURE));
-
-            let dist = WeightedIndex::new(&last_token_logits).unwrap();
-            let predicted_token = dist.sample(&mut rng);
-
-            next_tokens.push(predicted_token as u32);
-        }
-
-        next_tokens
     }
 
     pub fn forward_batch(&self, input: &Batch) -> Array3<f32> {
@@ -139,7 +127,7 @@ impl CrabformerModel {
 
         // Apply dropout to embeddings (only during training)
         if self.training {
-            token_embedding_output.apply_dropout(DROPOUT_RATE);
+            token_embedding_output.apply_dropout(self.config.dropout);
         }
 
         let mut output = token_embedding_output;
@@ -178,7 +166,7 @@ impl CrabformerModel {
         token_embedding_output += &position_embedding_output;
 
         // Apply dropout to embeddings and save mask
-        let dropout_mask = token_embedding_output.apply_dropout(DROPOUT_RATE);
+        let dropout_mask = token_embedding_output.apply_dropout(self.config.dropout);
         *self.embedding_dropout_mask.mut_ref() = dropout_mask;
 
         // Cache for backward pass
@@ -238,7 +226,7 @@ impl CrabformerModel {
 
         // Backprop through dropout - apply the same mask from forward pass
         if let Some(ref mask) = *self.embedding_dropout_mask.mut_ref() {
-            grad.apply_dropout_backward(mask, DROPOUT_RATE);
+            grad.apply_dropout_backward(mask, self.config.dropout);
         }
 
         // Backprop through position embeddings
@@ -311,16 +299,19 @@ impl CrabformerModel {
         &mut self,
         data_loader: &mut DataLoader,
         num_epochs: usize,
+        save_every_n_steps: usize,
+        out_dir: &str,
     ) -> Result<(), ModelError> {
         let batches_per_epoch = data_loader.total_batches();
 
-        let metrics = TrainingMetrics::new(num_epochs, batches_per_epoch);
+        let metrics =
+            TrainingMetrics::new(num_epochs, batches_per_epoch, self.transformer_layers.len());
         let metrics_handle = Arc::new(Mutex::new(metrics));
 
         self.set_training(true, metrics_handle.clone());
 
         // Start dashboard in a separate thread
-        let (dashboard_should_quit, dashboard_handle) =
+        let (quit_dashboard, dashboard_handle) =
             crate::dashboard::start_dashboard(metrics_handle.clone());
 
         let mut total_steps = 0;
@@ -329,10 +320,7 @@ impl CrabformerModel {
 
             data_loader.reset()?;
 
-            while let Some(batch) = data_loader
-                .next_batch()
-                .map_err(|e| ModelError::DataError(e))?
-            {
+            while let Some(batch) = data_loader.next_batch().map_err(ModelError::DataError)? {
                 // Set all gradients to zero
                 self.zero_grad();
 
@@ -373,40 +361,40 @@ impl CrabformerModel {
                     .collect();
 
                 // Compute total gradient norm
-                let total_grad_norm: f32 = params
-                    .iter()
-                    .map(|p| match p {
-                        ParamHandle::Array1 { grad, .. } => grad
-                            .mut_ref()
-                            .as_ref()
-                            .map_or(0.0, |g| g.mapv(|x| x * x).sum()),
-                        ParamHandle::Array2 { grad, .. } => grad
-                            .mut_ref()
-                            .as_ref()
-                            .map_or(0.0, |g| g.mapv(|x| x * x).sum()),
-                    })
-                    .sum::<f32>()
-                    .sqrt();
+                // let total_grad_norm: f32 = params
+                //     .iter()
+                //     .map(|p| match p {
+                //         ParamHandle::Array1 { grad, .. } => grad
+                //             .mut_ref()
+                //             .as_ref()
+                //             .map_or(0.0, |g| g.mapv(|x| x * x).sum()),
+                //         ParamHandle::Array2 { grad, .. } => grad
+                //             .mut_ref()
+                //             .as_ref()
+                //             .map_or(0.0, |g| g.mapv(|x| x * x).sum()),
+                //     })
+                //     .sum::<f32>()
+                //     .sqrt();
 
                 // Gradient clipping
-                let clip_norm = crate::params::GRADIENT_CLIP_NORM;
-                if total_grad_norm > clip_norm {
-                    let scale = clip_norm / total_grad_norm;
-                    for param in params.iter_mut() {
-                        match param {
-                            ParamHandle::Array1 { grad, .. } => {
-                                if let Some(g) = grad.mut_ref().as_mut() {
-                                    g.mapv_inplace(|x| x * scale);
-                                }
-                            }
-                            ParamHandle::Array2 { grad, .. } => {
-                                if let Some(g) = grad.mut_ref().as_mut() {
-                                    g.mapv_inplace(|x| x * scale);
-                                }
-                            }
-                        }
-                    }
-                }
+                // let clip_norm = 1.0;
+                // if total_grad_norm > clip_norm {
+                //     let scale = clip_norm / total_grad_norm;
+                //     for param in params.iter_mut() {
+                //         match param {
+                //             ParamHandle::Array1 { grad, .. } => {
+                //                 if let Some(g) = grad.mut_ref().as_mut() {
+                //                     g.mapv_inplace(|x| x * scale);
+                //                 }
+                //             }
+                //             ParamHandle::Array2 { grad, .. } => {
+                //                 if let Some(g) = grad.mut_ref().as_mut() {
+                //                     g.mapv_inplace(|x| x * scale);
+                //                 }
+                //             }
+                //         }
+                //     }
+                // }
 
                 // Perform optimization step on model parameters
                 optimizer.step(&mut params);
@@ -419,13 +407,16 @@ impl CrabformerModel {
                     metrics.loss_history.push((batch_num, loss));
                 }
 
-                if total_steps % SAVE_EVERY_N_STEPS == 0 {
-                    let file_name = format!(
-                        "{}/checkpoint_epoch_{}_{}.ron",
-                        CHECKPOINTS_DIR, epoch, step
-                    );
+                if total_steps % save_every_n_steps == 0 {
+                    let file_name = format!("checkpoint_epoch_{}_{}.ron", epoch, step);
 
-                    self.save_weights(&file_name)?;
+                    self.save_weights(out_dir, &file_name)?;
+                }
+
+                // Check for dashboard quit signal
+                if *quit_dashboard.lock() {
+                    println!("Training interrupted by user. Exiting...");
+                    return Ok(());
                 }
             }
 
@@ -437,32 +428,23 @@ impl CrabformerModel {
         }
 
         // Stop dashboard thread
-        *dashboard_should_quit.lock() = true;
+        *quit_dashboard.lock() = true;
         // Wait for dashboard thread to properly exit
         dashboard_handle.join().unwrap();
 
-        // Save final model weights
-        let file_name = format!("{}/model.ron", CHECKPOINTS_DIR);
-
-        self.save_weights(&file_name)?;
-
-        println!(
-            "Training complete!\nCheckpoints saved to '{}'",
-            CHECKPOINTS_DIR
-        );
         Ok(())
     }
 
-    fn save_weights(&self, file_name: &str) -> Result<(), ModelError> {
+    pub fn save_weights(&self, dir: &str, file_name: &str) -> Result<(), ModelError> {
         let serialized = ron::to_string(self)
             .map_err(|e| ModelError::SerializationError(format!("Serialization failed: {}", e)))?;
 
         // Ensure checkpoints directory exists
-        std::fs::create_dir_all(CHECKPOINTS_DIR).map_err(|e| {
+        std::fs::create_dir_all(dir).map_err(|e| {
             ModelError::IOError(format!("Failed to create checkpoints directory: {}", e))
         })?;
 
-        std::fs::write(file_name, serialized)
+        std::fs::write(format!("{}/{}", dir, file_name), serialized)
             .map_err(|e| ModelError::IOError(format!("Failed to write model to file: {}", e)))?;
 
         Ok(())

@@ -1,8 +1,8 @@
 use ndarray::{Array, RemoveAxis, parallel::prelude::IntoParallelRefMutIterator};
-use rand::{Rng, rngs::StdRng};
+use rand::Rng;
 use rayon::prelude::*;
 
-use crate::params::GLOBAL_RNG;
+use crate::rng::GLOBAL_RNG;
 
 pub trait Dropout {
     /// Apply dropout during forward pass.

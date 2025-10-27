@@ -1,19 +1,16 @@
-use std::{
-    fmt::format,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use ndarray::Array3;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    adamw::ParamHandle,
     errors::ModelError,
     layers::{
         Layer, LayerCacheParam, ZeroGrad, dropout::Dropout, linear::FeedForwardLayer,
         multi_head_attention::MultiHeadAttentionLayer, normalization::LayerNormLayer,
     },
     metrics::TrainingMetricsHandle,
-    params::QKV_BIAS,
 };
 
 #[derive(Serialize, Deserialize)]
@@ -41,10 +38,12 @@ pub struct TransformerBlock {
 
 impl TransformerBlock {
     pub fn new(
+        seq_length: usize,
         dim_model: usize,
         num_heads: usize,
         dim_ff: usize,
         dropout_rate: f32,
+        qkv_bias: bool,
         name: Option<String>,
     ) -> Result<Self, ModelError> {
         let name = name.unwrap_or("TransformerBlock".into());
@@ -53,12 +52,13 @@ impl TransformerBlock {
             dim_model,
             dim_model,
             num_heads,
+            seq_length,
             dropout_rate,
             Some(format!("{}::self_attention", name)),
         )?
         .with_casual_mask();
 
-        let attention_layer = if QKV_BIAS {
+        let attention_layer = if qkv_bias {
             attention_layer.with_qkv_bias()
         } else {
             attention_layer
@@ -80,7 +80,10 @@ impl TransformerBlock {
             training: false,
             name: name.clone(),
             metrics_handle: None,
-            attention_dropout_mask: LayerCacheParam::new(format!("{}::attention_dropout_mask", name)),
+            attention_dropout_mask: LayerCacheParam::new(format!(
+                "{}::attention_dropout_mask",
+                name
+            )),
             ff_dropout_mask: LayerCacheParam::new(format!("{}::ff_dropout_mask", name)),
         })
     }
@@ -140,7 +143,9 @@ impl Layer for TransformerBlock {
                 metrics.attention_duration.add_forward(attention_duration);
                 metrics.layer_norm_duration.add_forward(total_norm_duration);
                 metrics.feed_forward_duration.add_forward(ff_duration);
-                metrics.transformer_block_duration.add_forward(start_time.elapsed());
+                metrics
+                    .transformer_block_duration
+                    .add_forward(start_time.elapsed());
             }
         }
 
@@ -206,9 +211,13 @@ impl Layer for TransformerBlock {
             let mut metrics = metrics_handle.lock();
 
             metrics.attention_duration.add_backward(attention_duration);
-            metrics.layer_norm_duration.add_backward(total_norm_duration);
+            metrics
+                .layer_norm_duration
+                .add_backward(total_norm_duration);
             metrics.feed_forward_duration.add_backward(ff_duration);
-            metrics.transformer_block_duration.add_backward(start_time.elapsed());
+            metrics
+                .transformer_block_duration
+                .add_backward(start_time.elapsed());
         }
 
         Ok(grad_input)
@@ -236,7 +245,7 @@ impl Layer for TransformerBlock {
         self.feed_forward_layer_norm.set_eval();
     }
 
-    fn get_params(&mut self) -> Vec<crate::layers::ParamHandle> {
+    fn get_params(&mut self) -> Vec<ParamHandle<'_>> {
         let mut params = Vec::new();
 
         // Collect parameters from all sub-layers
