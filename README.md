@@ -2,6 +2,8 @@
 
 A transformer-based language model implemented from scratch in Rust, featuring a complete training pipeline with custom backpropagation using an AdamW optimizer.
 
+https://github.com/user-attachments/assets/cba551f0-e2e2-4f6d-888c-79504fed8657
+
 ## Overview
 
 I was feeling a bit rusty (heh) on the attention mechanism that transformers utilize for great results within NLP and other fields. While I had read the theory multiple times it didn't quite stick, so I figured that the best way to learn was to just build it from scratch.
