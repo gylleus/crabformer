@@ -23,7 +23,7 @@ struct CLIArgs {
 #[derive(Subcommand)]
 enum SubCommands {
     Train {
-        #[arg(short, long, default_value = "data/moby_dick.txt")]
+        #[arg(short, long, default_value = "data/dialogs.txt")]
         data_files: Vec<String>,
         #[arg(short, long, default_value = "16")]
         batch_size: usize,

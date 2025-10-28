@@ -5,11 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     adamw,
     errors::ModelError,
-    layers::{
-        Layer, LayerCacheParam, ZeroGrad,
-        activation::{Gelu, gelu_derivative},
-        xavier_initialized_array,
-    },
+    layers::{Layer, LayerCacheParam, ZeroGrad, xavier_initialized_array},
     metrics::TrainingMetricsHandle,
 };
 

@@ -23,7 +23,7 @@ const CRAB_ASCII: &str = r#"
        ██░    ███           ░██▓   ░██
      ██▓█▒████                  ████████
     ▒█ ▓██                         ███ ██
-    ██▓█         ██▒   🦀  ██         ██▓█
+    ██▓█         ██▒      ██         ██▓█
     ▒█░▒██        ██     ██        ██▒ ██
  ██▒  ███▓██  █████████████████░ ██▓▓██   ██
  ▒███░   ██████▒░░▒░     ░▓░ ░▓█████    ████
@@ -66,7 +66,7 @@ impl Dashboard {
             metrics_handle,
             should_quit: Arc::new(Mutex::new(false)),
             crab_animation: CrabAnimation {
-                position: 64,
+                position: 0,
                 move_speed: 2,
                 going_left: false,
                 half_width: 50,
