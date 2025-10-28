@@ -2,7 +2,7 @@
 
 A transformer-based language model implemented from scratch in Rust, featuring a complete training pipeline with custom backpropagation using an AdamW optimizer.
 
-https://github.com/user-attachments/assets/61724d0e-acd7-427a-9509-eab1c7b644e9
+https://github.com/user-attachments/assets/cba551f0-e2e2-4f6d-888c-79504fed8657
 
 ## Overview
 
