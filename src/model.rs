@@ -112,10 +112,11 @@ impl CrabformerModel {
         })
     }
 
-    pub fn forward_batch(&self, input: &Batch) -> Array3<f32> {
-        let mut token_embedding_output = self.token_embedding_layer.forward(&input.x);
+    /// Forward pass without caching (for inference)
+    pub fn forward(&self, input: &Array2<u32>) -> Array3<f32> {
+        let mut token_embedding_output = self.token_embedding_layer.forward(input);
 
-        let (batch_size, sequence_length) = input.x.dim();
+        let (batch_size, sequence_length) = input.dim();
 
         let positions = Array2::from_shape_fn((batch_size, sequence_length), |(_, j)| {
             j as u32 // Each position in the sequence gets its index
@@ -124,11 +125,6 @@ impl CrabformerModel {
         let position_embedding_output = self.position_embedding_layer.forward(&positions);
 
         token_embedding_output += &position_embedding_output;
-
-        // Apply dropout to embeddings (only during training)
-        if self.training {
-            token_embedding_output.apply_dropout(self.config.dropout);
-        }
 
         let mut output = token_embedding_output;
         for layer in &self.transformer_layers {
@@ -144,7 +140,7 @@ impl CrabformerModel {
     }
 
     /// Forward pass with caching for training
-    pub fn forward_train(
+    fn forward_train(
         &mut self,
         input: &Batch,
         metrics_handle: TrainingMetricsHandle,
@@ -200,12 +196,6 @@ impl CrabformerModel {
     }
 
     /// Backward pass: propagates gradients through the model
-    ///
-    /// # Arguments
-    /// * `grad_output` - Gradient of loss w.r.t. model output [batch_size, seq_len, vocab_size]
-    ///
-    /// # Returns
-    /// Result indicating success or error
     pub fn backward(
         &mut self,
         grad_output: &Array3<f32>,
@@ -256,29 +246,25 @@ impl CrabformerModel {
     }
 
     /// Set model to training mode
-    fn set_training(&mut self, training: bool, metrics_handle: TrainingMetricsHandle) {
-        self.training = training;
+    pub fn set_training(&mut self, metrics_handle: TrainingMetricsHandle) {
         for layer in &mut self.transformer_layers {
-            if training {
-                layer.set_train(metrics_handle.clone());
-            } else {
-                layer.set_eval();
-            }
+            layer.set_train(metrics_handle.clone());
         }
+        self.token_embedding_layer.set_train(metrics_handle.clone());
+        self.position_embedding_layer
+            .set_train(metrics_handle.clone());
+        self.final_layer_norm.set_train(metrics_handle.clone());
+        self.output_layer.set_train(metrics_handle.clone());
+    }
 
-        // Set training mode for embedding and output layers
-        if training {
-            self.token_embedding_layer.set_train(metrics_handle.clone());
-            self.position_embedding_layer
-                .set_train(metrics_handle.clone());
-            self.final_layer_norm.set_train(metrics_handle.clone());
-            self.output_layer.set_train(metrics_handle.clone());
-        } else {
-            self.token_embedding_layer.set_eval();
-            self.position_embedding_layer.set_eval();
-            self.final_layer_norm.set_eval();
-            self.output_layer.set_eval();
+    pub fn set_eval(&mut self) {
+        for layer in &mut self.transformer_layers {
+            layer.set_eval();
         }
+        self.token_embedding_layer.set_eval();
+        self.position_embedding_layer.set_eval();
+        self.final_layer_norm.set_eval();
+        self.output_layer.set_eval();
     }
 
     /// Zero out all gradients
@@ -308,7 +294,7 @@ impl CrabformerModel {
             TrainingMetrics::new(num_epochs, batches_per_epoch, self.transformer_layers.len());
         let metrics_handle = Arc::new(Mutex::new(metrics));
 
-        self.set_training(true, metrics_handle.clone());
+        self.set_training(metrics_handle.clone());
 
         // Start dashboard in a separate thread
         let (quit_dashboard, dashboard_handle) =
@@ -359,42 +345,6 @@ impl CrabformerModel {
                             .flat_map(|layer| layer.get_params()),
                     )
                     .collect();
-
-                // Compute total gradient norm
-                // let total_grad_norm: f32 = params
-                //     .iter()
-                //     .map(|p| match p {
-                //         ParamHandle::Array1 { grad, .. } => grad
-                //             .mut_ref()
-                //             .as_ref()
-                //             .map_or(0.0, |g| g.mapv(|x| x * x).sum()),
-                //         ParamHandle::Array2 { grad, .. } => grad
-                //             .mut_ref()
-                //             .as_ref()
-                //             .map_or(0.0, |g| g.mapv(|x| x * x).sum()),
-                //     })
-                //     .sum::<f32>()
-                //     .sqrt();
-
-                // Gradient clipping
-                // let clip_norm = 1.0;
-                // if total_grad_norm > clip_norm {
-                //     let scale = clip_norm / total_grad_norm;
-                //     for param in params.iter_mut() {
-                //         match param {
-                //             ParamHandle::Array1 { grad, .. } => {
-                //                 if let Some(g) = grad.mut_ref().as_mut() {
-                //                     g.mapv_inplace(|x| x * scale);
-                //                 }
-                //             }
-                //             ParamHandle::Array2 { grad, .. } => {
-                //                 if let Some(g) = grad.mut_ref().as_mut() {
-                //                     g.mapv_inplace(|x| x * scale);
-                //                 }
-                //             }
-                //         }
-                //     }
-                // }
 
                 // Perform optimization step on model parameters
                 optimizer.step(&mut params);

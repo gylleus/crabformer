@@ -20,28 +20,6 @@ struct CLIArgs {
     training: SubCommands,
 }
 
-// pub const NUM_EPOCHS: usize = 200;
-// pub const BATCH_SIZE: usize = 16;
-// pub const SAVE_EVERY_N_STEPS: usize = 100;
-
-// /// Dimension of the hidden layer in the feed-forward layers for the transformer blocks.
-// pub const EMBED_DIMENSION: usize = 192 * 2;
-// pub const FF_HIDDEN_DIMENSION: usize = 4 * EMBED_DIMENSION;
-// pub const ATTENTION_HEADS: usize = 4;
-// pub const TRANSFORMER_BLOCKS: usize = 4;
-// /// The length of each training sequence (T tokens).
-// pub const SEQUENCE_LENGTH: usize = 128;
-
-// /// The size of the data ring buffer used for training. A larger size improves batch shuffling.
-// pub const RING_BUFFER_SIZE: usize = 16 * SEQUENCE_LENGTH * BATCH_SIZE;
-// pub const RING_BUFFER_ADVANCE: usize = SEQUENCE_LENGTH * BATCH_SIZE;
-
-// pub const QKV_BIAS: bool = true;
-// pub const DROPOUT_RATE: f32 = 0.01;
-
-// pub const LEARNING_RATE: f32 = 5e-4;
-// pub const WEIGHT_DECAY: f32 = 5e-3;
-
 #[derive(Subcommand)]
 enum SubCommands {
     Train {
@@ -82,6 +60,10 @@ enum SubCommands {
         temp: f32,
         #[arg(short, long, default_value = "1")]
         top_k: usize,
+        #[arg(short, long, default_value = "50")]
+        min_tokens: usize,
+        #[arg(short, long, default_value = "350")]
+        max_tokens: usize,
     },
 }
 
@@ -132,14 +114,16 @@ fn main() {
                 .expect("Failed to train model");
 
             // Save final model weights
-            let file_name = format!("{}/model.ron", out_dir);
-
-            if let Err(e) = model.save_weights(&out_dir, &file_name) {
-                eprintln!("Failed to save model weights: {}", e);
+            let final_checkpoint_name = "model.ron";
+            if let Err(e) = model.save_weights(&out_dir, &final_checkpoint_name) {
+                eprintln!(
+                    "Failed to save model weights to {}: {}",
+                    final_checkpoint_name, e
+                );
             } else {
                 println!(
                     "=====\nTraining complete!\nFinal model saved to '{}'",
-                    file_name
+                    final_checkpoint_name
                 );
             }
         }
@@ -147,10 +131,13 @@ fn main() {
             checkpoint,
             temp,
             top_k,
+            min_tokens,
+            max_tokens,
         } => {
             println!("Using checkpoint: {}", checkpoint);
-            let model = model::CrabformerModel::load(checkpoint).expect("Failed to load model");
-            generate::chat(&model, temp, top_k);
+            let mut model = model::CrabformerModel::load(checkpoint).expect("Failed to load model");
+            model.set_eval();
+            generate::chat(&model, temp, top_k, min_tokens, max_tokens);
         }
     }
 }

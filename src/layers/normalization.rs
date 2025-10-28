@@ -70,12 +70,12 @@ impl LayerNormLayer {
     pub fn get_params(&mut self) -> Vec<crate::adamw::ParamHandle<'_>> {
         vec![
             crate::adamw::ParamHandle::Array1 {
-                key: self.scale_grad.id(),
+                key: self.scale_grad.key(),
                 data: &mut self.scale,
                 grad: &self.scale_grad,
             },
             crate::adamw::ParamHandle::Array1 {
-                key: self.shift_grad.id(),
+                key: self.shift_grad.key(),
                 data: &mut self.shift,
                 grad: &self.shift_grad,
             },

@@ -14,8 +14,6 @@ pub struct AdamState {
 }
 
 impl AdamState {
-    /// Creates a new parameter with the given data.
-    /// Initializes gradient and optimizer state to zeros with the same shape.
     pub fn new(shape: &[usize]) -> Self {
         Self {
             m: ArrayD::zeros(shape),
@@ -37,12 +35,7 @@ pub enum ParamHandle<'a> {
     },
 }
 
-/// AdamW optimizer with decoupled weight decay.
-///
-/// AdamW improves upon Adam by decoupling the weight decay from the gradient-based update.
-/// This leads to better generalization and is now considered best practice.
-///
-/// Paper: "Decoupled Weight Decay Regularization" (Loshchilov & Hutter, 2019)
+/// AdamW (Adam with weight decay) optimizer.
 pub struct AdamWOptimizer {
     /// Learning rate (step size)
     learning_rate: f32,
@@ -62,13 +55,6 @@ pub struct AdamWOptimizer {
 
 impl AdamWOptimizer {
     /// Creates a new AdamW optimizer with the given hyperparameters.
-    ///
-    /// # Arguments
-    /// * `learning_rate` - Step size (typical: 0.001 to 0.0001 for transformers)
-    /// * `beta1` - Exponential decay for first moment (typical: 0.9)
-    /// * `beta2` - Exponential decay for second moment (typical: 0.999)
-    /// * `epsilon` - Numerical stability constant (typical: 1e-8)
-    /// * `weight_decay` - Weight decay coefficient (typical: 0.01)
     pub fn new(
         learning_rate: f32,
         beta1: f32,

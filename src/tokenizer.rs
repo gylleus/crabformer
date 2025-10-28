@@ -11,6 +11,6 @@ impl ByteTokenizer {
     }
 
     pub fn vocab_size(&self) -> usize {
-        256 // Byte-level tokenizer has 256 possible tokens (0-255)
+        256 // 256 possible tokens (0-255)
     }
 }

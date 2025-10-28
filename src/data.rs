@@ -7,9 +7,11 @@ use std::{
 
 use crate::{errors::DataError, rng::GLOBAL_RNG};
 
+/// A batch of input-output token pairs for training.
+/// Contained arrays have shape [batch_size, sequence_length].
 pub struct Batch {
-    pub x: Array2<u32>, // [batch_size, sequence_length]
-    pub y: Array2<u32>, // [batch_size, sequence_length]
+    pub x: Array2<u32>,
+    pub y: Array2<u32>,
 }
 
 pub struct DataLoader {
@@ -203,6 +205,7 @@ where
     }
 }
 
+/// An iterator over byte tokens from onee or multiple files.
 struct TokenStream {
     files: Vec<String>,
     current_file_buffer: Option<BufReader<File>>,

@@ -5,16 +5,22 @@ pub fn cross_entropy_loss(logits: &Array3<f32>, targets: &Array2<u32>) -> f32 {
     let (batch_size, seq_len, _vocab_size) = logits.dim();
     let mut total_loss = 0.0;
 
+    // Iterate over each token positions in all sequences in the batch and accumulate loss
     for batch_idx in 0..batch_size {
         for seq_idx in 0..seq_len {
+            // Get the logits for the current position of the sequence
             let logit_slice = logits.slice(ndarray::s![batch_idx, seq_idx, ..]);
+
+            // Get the actual target token index
             let target = targets[[batch_idx, seq_idx]] as usize;
 
-            // Compute softmax for numerical stability
+            // Compute softmax of logits for numerical stability.
+            // We could use the Softmax trait, but it requires us to make a data copy.
             let max_logit = logit_slice
                 .iter()
                 .cloned()
                 .fold(f32::NEG_INFINITY, f32::max);
+
             let exp_sum: f32 = logit_slice.iter().map(|&x| (x - max_logit).exp()).sum();
             let log_sum_exp = max_logit + exp_sum.ln();
 
@@ -89,7 +95,7 @@ mod tests {
         let sum_0: f32 = grad.slice(ndarray::s![0, 0, ..]).sum();
         let sum_1: f32 = grad.slice(ndarray::s![0, 1, ..]).sum();
 
-        assert!((sum_0 - (-1.0 / 2.0)).abs() < 0.01);
-        assert!((sum_1 - (-1.0 / 2.0)).abs() < 0.01);
+        assert!(sum_0.abs() < 0.01);
+        assert!(sum_1.abs() < 0.01);
     }
 }

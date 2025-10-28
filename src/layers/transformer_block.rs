@@ -7,7 +7,7 @@ use crate::{
     adamw::ParamHandle,
     errors::ModelError,
     layers::{
-        Layer, LayerCacheParam, ZeroGrad, dropout::Dropout, linear::FeedForwardLayer,
+        Layer, LayerCacheParam, ZeroGrad, dropout::Dropout, feed_forward::FeedForwardLayer,
         multi_head_attention::MultiHeadAttentionLayer, normalization::LayerNormLayer,
     },
     metrics::TrainingMetricsHandle,
@@ -134,11 +134,6 @@ impl Layer for TransformerBlock {
             let mask = feed_forward_output.apply_dropout(self.dropout_rate);
             *self.ff_dropout_mask.mut_ref() = mask;
             if let Some(metrics_handle) = &self.metrics_handle {
-                // metrics_handle
-                //     .lock()
-                //     .transformer_block_duration
-                //     .forward_duration += start_time.elapsed();
-
                 let mut metrics = metrics_handle.lock();
                 metrics.attention_duration.add_forward(attention_duration);
                 metrics.layer_norm_duration.add_forward(total_norm_duration);
@@ -162,9 +157,6 @@ impl Layer for TransformerBlock {
         // Start with gradient flowing back from output
         let grad = grad_output.clone();
 
-        // Backprop through second residual connection
-        // output = attention_output + feed_forward_output
-        // So gradients flow to both paths
         let mut grad_ff_output = grad.clone();
         let grad_attention_after_residual = grad.clone();
 
@@ -202,8 +194,6 @@ impl Layer for TransformerBlock {
         total_norm_duration += norm_start.elapsed();
 
         // Combine gradients from both residual paths
-        // grad_input_from_norm: gradient through layer_norm and attention
-        // grad_attention_after_residual: gradient through the skip connection
         let grad_input = grad_input_from_norm + &grad_attention_after_residual;
 
         // Update metrics

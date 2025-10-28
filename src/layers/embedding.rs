@@ -111,7 +111,7 @@ impl Layer for EmbeddingLayer {
 
     fn get_params(&mut self) -> Vec<ParamHandle<'_>> {
         vec![ParamHandle::Array2 {
-            key: self.weight_grad.id(),
+            key: self.weight_grad.key(),
             data: &mut self.weights,
             grad: &self.weight_grad,
         }]

@@ -1,3 +1,12 @@
+pub mod activation;
+pub mod dropout;
+pub mod embedding;
+pub mod feed_forward;
+pub mod linear;
+pub mod multi_head_attention;
+pub mod normalization;
+pub mod transformer_block;
+
 use parking_lot::RwLock;
 
 use ndarray::{Array, Array2};
@@ -7,15 +16,6 @@ use serde::{Serialize, de::DeserializeOwned};
 use crate::{
     adamw::ParamHandle, errors::ModelError, metrics::TrainingMetricsHandle, rng::GLOBAL_RNG,
 };
-
-pub mod activation;
-pub mod dropout;
-pub mod embedding;
-pub mod linear;
-pub mod multi_head_attention;
-pub mod normalization;
-pub mod self_attention;
-pub mod transformer_block;
 
 /// Initialize an array with Xavier/Glorot initialization.
 /// This aims to keep variance of activations and gradients roughly the same across layers, to keep training more stable.
@@ -27,6 +27,8 @@ pub fn xavier_initialized_array(fan_in: usize, fan_out: usize) -> Array2<f32> {
     })
 }
 
+/// Core trait for all layers of the model.
+/// While the trait is not used directly in the model implementation, it provides a common interface for layer implementations.
 pub trait Layer: ZeroGrad + Serialize + DeserializeOwned {
     type Input;
     type Output;
@@ -47,6 +49,7 @@ pub trait Layer: ZeroGrad + Serialize + DeserializeOwned {
     /// Set the layer to evaluation mode (disables caching to save memory)
     fn set_eval(&mut self) {}
 
+    /// Get mutable references to the layer parameters for optimization.
     fn get_params(&mut self) -> Vec<ParamHandle<'_>> {
         Vec::new()
     }
@@ -56,6 +59,8 @@ pub trait ZeroGrad {
     fn zero_grad(&mut self);
 }
 
+/// Unique identifier for layer parameters.
+/// This is used by the optimizer to continuously track parameters.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ParamKey(pub u64);
 
@@ -63,7 +68,7 @@ pub struct ParamKey(pub u64);
 /// Using a lock like this adds a small overhead, but it is negligible compared to the rest of the model computations.
 pub struct LayerCacheParam<T> {
     pub data: RwLock<Option<T>>,
-    pub id: ParamKey,
+    pub key: ParamKey,
     name: String,
 }
 
@@ -79,15 +84,17 @@ impl<T> LayerCacheParam<T> {
         let id = rand::rng().next_u64();
         Self {
             data: RwLock::new(None),
-            id: ParamKey(id),
+            key: ParamKey(id),
             name,
         }
     }
 
+    /// Returns a mutable reference to the cached data while holding the write lock.
     pub fn mut_ref(&self) -> parking_lot::RwLockWriteGuard<'_, Option<T>> {
         self.data.write()
     }
 
+    /// Returns a read-only reference to the cached data while holding a read lock.
     pub fn read_ref(&self) -> Result<parking_lot::MappedRwLockReadGuard<'_, T>, ModelError> {
         let guard = self.data.read();
 
@@ -104,8 +111,8 @@ impl<T> LayerCacheParam<T> {
         }))
     }
 
-    pub fn id(&self) -> ParamKey {
-        self.id.clone()
+    pub fn key(&self) -> ParamKey {
+        self.key.clone()
     }
 
     pub fn clear(&self) {

@@ -4,11 +4,17 @@ use ndarray::{Array1, Array2};
 use rand::distr::{Distribution, weighted::WeightedIndex};
 
 use crate::{
-    data::Batch, layers::normalization::Softmax, model::CrabformerModel, rng::GLOBAL_RNG,
+    layers::normalization::Softmax, model::CrabformerModel, rng::GLOBAL_RNG,
     tokenizer::ByteTokenizer,
 };
 
-pub fn chat(model: &CrabformerModel, temperature: f32, top_k: usize) {
+pub fn chat(
+    model: &CrabformerModel,
+    temperature: f32,
+    top_k: usize,
+    min_new_tokens: usize,
+    max_new_tokens: usize,
+) {
     let tokenizer = ByteTokenizer;
 
     println!("\n=== Crabformer Chat Interface ===");
@@ -36,16 +42,27 @@ pub fn chat(model: &CrabformerModel, temperature: f32, top_k: usize) {
             continue;
         }
 
-        generate_text(model, &tokenizer, input, 200, temperature, top_k);
+        generate_text(
+            model,
+            &tokenizer,
+            input,
+            min_new_tokens,
+            max_new_tokens,
+            temperature,
+            top_k,
+        );
 
         println!("\n---");
     }
 }
 
+const STOP_CHARACTERS: &[char] = &['.', '!', '?'];
+
 fn generate_text(
     model: &CrabformerModel,
     tokenizer: &ByteTokenizer,
     prompt: &str,
+    min_new_tokens: usize,
     max_new_tokens: usize,
     temperature: f32,
     top_k: usize,
@@ -53,11 +70,11 @@ fn generate_text(
     // Encode the prompt
     let mut tokens = tokenizer.encode(prompt);
 
-    print!("Crabformer: ");
+    print!("Crabformer 🦀: ");
     io::stdout().flush().unwrap();
 
     // Generate tokens one at a time
-    for _i in 0..max_new_tokens {
+    loop {
         // Take the last SEQUENCE_LENGTH tokens (or fewer if we don't have that many yet)
         let context_len = tokens.len().min(model.config.seq_length);
         let context_start = tokens.len().saturating_sub(model.config.seq_length);
@@ -70,16 +87,11 @@ fn generate_text(
         padded_context[padding_len..].copy_from_slice(context);
 
         // Create batch with single sequence
-        let x = Array2::from_shape_vec((1, model.config.seq_length), padded_context)
-            .expect("Failed to create input array");
-
-        // We don't need y for generation, but Batch requires it
-        let y = Array2::zeros((1, model.config.seq_length));
-
-        let batch = Batch { x, y };
+        let sequence = Array2::from_shape_vec((1, model.config.seq_length), padded_context)
+            .expect("Failed to create input sequence array");
 
         // Get model output (logits)
-        let model_output = model.forward_batch(&batch);
+        let model_output = model.forward(&sequence);
 
         // Get logits for the last position in the sequence
         let last_token_logits = model_output
@@ -90,8 +102,18 @@ fn generate_text(
         let next_token = sample_token(&last_token_logits, temperature, top_k);
         tokens.push(next_token);
 
-        print!("{}", tokenizer.decode(&[next_token]));
+        let decoded = tokenizer.decode(&[next_token]);
+
+        print!("{}", decoded);
         io::stdout().flush().unwrap();
+
+        // If we are past the max tokens, or have reached min tokens and a stop character, stop generation.
+        if tokens.len() > max_new_tokens
+            || (tokens.len() >= min_new_tokens
+                && STOP_CHARACTERS.contains(&decoded.chars().last().unwrap()))
+        {
+            break;
+        }
     }
 
     // Decode all tokens
